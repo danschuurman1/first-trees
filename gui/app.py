@@ -30,7 +30,7 @@ class App(tk.Tk):
     def _build_ui(self) -> None:
         nb = ttk.Notebook(self)
         nb.pack(fill="both", expand=True, padx=4, pady=4)
-        self.bind("<Escape>", lambda _: self._esc_stop())
+        self.bind_all("<Escape>", lambda _: self._esc_stop())
 
         bot_names = list(BOT_REGISTRY.keys()) or ["Woodcutter"]
 

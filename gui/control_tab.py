@@ -54,6 +54,10 @@ class ControlTab(ttk.Frame):
         ttk.Label(self, text="Press ESC to halt bot at any time.",
                   foreground="gray").grid(row=6, column=0, columnspan=2, **pad)
 
+        ttk.Label(self, text="Emergency stop: touch /tmp/osrs_bot_stop",
+                  foreground="gray", font=("Helvetica", 8)).grid(
+            row=7, column=0, columnspan=2, **pad)
+
     def _start(self) -> None:
         self._start_time = datetime.now()
         self._start_btn.configure(state="disabled")

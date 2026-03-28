@@ -1,5 +1,6 @@
 # bots/base_bot.py
 from __future__ import annotations
+import os
 import threading
 import queue
 import random
@@ -7,6 +8,8 @@ import time
 from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Optional
+
+_STOP_FILE = "/tmp/osrs_bot_stop"
 
 
 class Bot(ABC):
@@ -36,14 +39,25 @@ class Bot(ABC):
         return self._running.is_set()
 
     def _run(self) -> None:
+        # Clean up any leftover stop file from a previous run
+        if os.path.exists(_STOP_FILE):
+            try:
+                os.remove(_STOP_FILE)
+            except OSError:
+                pass
         self.log(f"Bot '{self.name}' started.")
+        self.log(f"Emergency stop: touch {_STOP_FILE}")
         while self._running.is_set():
+            if os.path.exists(_STOP_FILE):
+                self.log("Stop file detected — halting bot")
+                break
             try:
                 self.run_loop()
                 self.loops += 1
             except Exception as exc:
                 self.log(f"ERROR in run_loop: {exc}")
                 self._running.clear()
+        self._running.clear()
         self.log(f"Bot '{self.name}' stopped.")
 
     @abstractmethod

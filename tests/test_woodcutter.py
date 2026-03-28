@@ -25,6 +25,7 @@ def _make_bot(
     bot._scheduler.is_break_time.return_value = False
     bot._running.set()  # simulate running bot for loops that check _running
     bot._screen.pixel_color.return_value = (180, 25, 20)  # default: inventory open (red)
+    bot._origin = (0, 0)
     return bot
 
 
@@ -119,54 +120,20 @@ def test_ensure_inventory_open_does_not_click_when_already_open():
     bot._mouse.move_and_click.assert_not_called()
 
 
-def test_inventory_full_opens_tab_before_grab():
-    """_inventory_full must ensure inventory is open before grabbing the region."""
+def test_inventory_full_calls_ensure_open():
     bot = _make_bot()
-    call_order = []
-    bot._screen.pixel_color.return_value = (75, 70, 68)  # closed
-    bot._mouse.move_and_click.side_effect = lambda pos: call_order.append("click") or pos
-    bot._screen.grab.side_effect = lambda r: call_order.append("grab") or MagicMock()
-    bot._color.find_clusters.return_value = []
+    bot._ensure_inventory_open = MagicMock()
+    bot._count_filled_slots = MagicMock(return_value=0)
     bot._inventory_full()
-    assert call_order.index("click") < call_order.index("grab")
+    bot._ensure_inventory_open.assert_called_once()
 
 
-def test_inventory_has_logs_opens_tab_before_grab():
-    """_inventory_has_logs must ensure inventory is open before grabbing the region."""
+def test_inventory_has_logs_calls_ensure_open():
     bot = _make_bot()
-    call_order = []
-    bot._screen.pixel_color.return_value = (75, 70, 68)  # closed
-    bot._mouse.move_and_click.side_effect = lambda pos: call_order.append("click") or pos
-    bot._screen.grab.side_effect = lambda r: call_order.append("grab") or MagicMock()
-    bot._color.find_clusters.return_value = []
+    bot._ensure_inventory_open = MagicMock()
+    bot._count_filled_slots = MagicMock(return_value=0)
     bot._inventory_has_logs()
-    assert call_order.index("click") < call_order.index("grab")
-
-
-# ---------------------------------------------------------------------------
-# Bug 3 — Drop context menu: right-click required
-# ---------------------------------------------------------------------------
-
-def test_drop_one_log_right_clicks_item_before_drop():
-    """_drop_one_log must right-click the log to open the context menu."""
-    bot = _make_bot()
-    bot._color.best_cluster.return_value = (600, 250)
-    bot._mouse.right_click = MagicMock(return_value=(600, 250))
-    bot._mouse.move_and_click.return_value = (600, 290)
-    bot._drop_one_log()
-    bot._mouse.right_click.assert_called_once_with((600, 250))
-
-
-def test_drop_one_log_left_clicks_drop_option_after_right_click():
-    """After right-clicking, _drop_one_log must left-click the Drop option below."""
-    bot = _make_bot()
-    bot._color.best_cluster.return_value = (600, 250)
-    bot._mouse.right_click = MagicMock(return_value=(600, 250))
-    bot._mouse.move_and_click.return_value = (600, 290)
-    bot._drop_one_log()
-    # The drop option click must have a y-offset from the item
-    clicked_pos = bot._mouse.move_and_click.call_args[0][0]
-    assert clicked_pos[1] > 250  # below the item
+    bot._ensure_inventory_open.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -174,24 +141,165 @@ def test_drop_one_log_left_clicks_drop_option_after_right_click():
 # ---------------------------------------------------------------------------
 
 def test_drop_all_logs_shift_clicks_every_log_cluster():
-    """_drop_all_logs must hold Shift and left-click every log cluster."""
+    """_drop_all_logs must hold Shift and left-click every filled slot."""
     bot = _make_bot()
-    log_positions = [(580, 220), (604, 220), (628, 220)]
-    bot._color.find_clusters.return_value = log_positions
+    bot._ensure_inventory_open = MagicMock()
+    positions = [(580, 220), (604, 220), (628, 220)]
+    bot._slot_positions = MagicMock(return_value=positions)
+    bot._is_slot_filled = MagicMock(return_value=True)
     bot._mouse.move_and_click.return_value = (580, 220)
     bot._drop_all_logs()
-    assert bot._mouse.move_and_click.call_count == len(log_positions)
+    assert bot._mouse.move_and_click.call_count == len(positions)
     bot._keyboard.press_shift.assert_called()
     bot._keyboard.release_shift.assert_called()
 
 
 def test_drop_all_logs_releases_shift_even_when_no_logs():
-    """Shift must always be released, even when the inventory scan finds nothing."""
+    """When no slots are filled, shift must never be pressed (no dangling press)."""
     bot = _make_bot()
-    bot._color.find_clusters.return_value = []
+    bot._ensure_inventory_open = MagicMock()
+    bot._slot_positions = MagicMock(return_value=[])
+    bot._is_slot_filled = MagicMock(return_value=False)
     bot._drop_all_logs()
-    # release_shift should not be called at all (or gracefully handle no logs)
-    # At minimum, press_shift must not be left dangling: calls must be balanced
     press_count = bot._keyboard.press_shift.call_count
     release_count = bot._keyboard.release_shift.call_count
     assert press_count == release_count
+
+
+# ---------------------------------------------------------------------------
+# Calibration / origin offset tests
+# ---------------------------------------------------------------------------
+
+def test_viewport_grab_uses_origin_x_offset():
+    """_nearest_living_tree must apply origin x to the grab region."""
+    bot = _make_bot()
+    bot._origin = (20, 0)
+    bot._color.find_clusters.return_value = []
+    bot._nearest_living_tree()
+    left = bot._screen.grab.call_args[0][0][0]
+    assert left == 20 + 4  # ox + 4
+
+
+def test_viewport_grab_uses_origin_y_offset():
+    bot = _make_bot()
+    bot._origin = (0, 30)
+    bot._color.find_clusters.return_value = []
+    bot._nearest_living_tree()
+    top = bot._screen.grab.call_args[0][0][1]
+    assert top == 30 + 4  # oy + 4
+
+
+def test_inventory_tab_pixel_check_includes_origin():
+    """_is_inventory_open must sample pixel at (ox+644, oy+169)."""
+    bot = _make_bot()
+    bot._origin = (10, 20)
+    bot._screen.pixel_color.return_value = (180, 25, 20)
+    bot._is_inventory_open()
+    bot._screen.pixel_color.assert_called_with(10 + 644, 20 + 169)
+
+
+def test_ensure_inventory_open_tab_click_includes_origin():
+    """When tab is closed, click target must include origin offset."""
+    bot = _make_bot()
+    bot._origin = (10, 20)
+    bot._screen.pixel_color.return_value = (75, 70, 68)  # grey = closed
+    bot._mouse.move_and_click.return_value = (654, 189)
+    bot._ensure_inventory_open()
+    clicked = bot._mouse.move_and_click.call_args[0][0]
+    assert clicked == (10 + 644, 20 + 169)
+
+
+# ---------------------------------------------------------------------------
+# Slot-based inventory tests
+# ---------------------------------------------------------------------------
+
+def test_slot_positions_returns_28():
+    bot = _make_bot()
+    assert len(bot._slot_positions()) == 28
+
+
+def test_slot_positions_include_origin():
+    """All slot positions must include the origin offset."""
+    bot = _make_bot()
+    bot._origin = (10, 20)
+    slots = bot._slot_positions()
+    # Every x must be > 10, every y must be > 20
+    assert all(x > 10 for x, y in slots)
+    assert all(y > 20 for x, y in slots)
+
+
+def test_slot_positions_evenly_spaced():
+    """Consecutive columns in the same row differ by _INV_SLOT_W exactly."""
+    from bots.woodcutter import _INV_SLOT_W, _INV_SLOT_H
+    bot = _make_bot()
+    slots = bot._slot_positions()
+    # Row 0: slots 0-3 should be spaced by _INV_SLOT_W horizontally
+    row0 = slots[0:4]
+    for i in range(3):
+        assert row0[i + 1][0] - row0[i][0] == _INV_SLOT_W
+    # Column 0: slots 0, 4, 8... should be spaced by _INV_SLOT_H vertically
+    col0 = [slots[r * 4] for r in range(7)]
+    for i in range(6):
+        assert col0[i + 1][1] - col0[i][1] == _INV_SLOT_H
+
+
+def test_is_slot_filled_returns_false_for_dark_pixel():
+    bot = _make_bot()
+    bot._screen.pixel_color.return_value = (55, 52, 48)  # empty slot background
+    assert bot._is_slot_filled((600, 250)) is False
+
+
+def test_is_slot_filled_returns_true_for_bright_pixel():
+    bot = _make_bot()
+    bot._screen.pixel_color.return_value = (140, 90, 43)  # log item
+    assert bot._is_slot_filled((600, 250)) is True
+
+
+def test_inventory_full_true_when_28_filled():
+    bot = _make_bot()
+    bot._ensure_inventory_open = MagicMock()
+    bot._count_filled_slots = MagicMock(return_value=28)
+    assert bot._inventory_full() is True
+
+
+def test_inventory_full_false_when_fewer_than_28():
+    bot = _make_bot()
+    bot._ensure_inventory_open = MagicMock()
+    bot._count_filled_slots = MagicMock(return_value=17)
+    assert bot._inventory_full() is False
+
+
+def test_drop_all_logs_skips_empty_slots():
+    """Only filled slots get clicked — empty slots are ignored."""
+    from bots.woodcutter import _INV_ROWS, _INV_COLS
+    bot = _make_bot()
+    bot._ensure_inventory_open = MagicMock()
+    # 28 slots; only slot 0 and slot 5 are filled
+    filled_positions = {0, 5}
+    all_slots = [(i * 10, i * 10) for i in range(28)]
+    bot._slot_positions = MagicMock(return_value=all_slots)
+    bot._is_slot_filled = MagicMock(side_effect=lambda pos: all_slots.index(pos) in filled_positions)
+    bot._mouse.move_and_click.return_value = (0, 0)
+    bot._drop_all_logs()
+    assert bot._mouse.move_and_click.call_count == 2
+
+
+def test_drop_all_logs_holds_shift_around_clicks():
+    bot = _make_bot()
+    bot._ensure_inventory_open = MagicMock()
+    all_slots = [(i * 10, 0) for i in range(3)]
+    bot._slot_positions = MagicMock(return_value=all_slots)
+    bot._is_slot_filled = MagicMock(return_value=True)
+    bot._mouse.move_and_click.return_value = (0, 0)
+    bot._drop_all_logs()
+    bot._keyboard.press_shift.assert_called_once()
+    bot._keyboard.release_shift.assert_called_once()
+
+
+def test_drop_all_logs_releases_shift_when_no_slots():
+    bot = _make_bot()
+    bot._ensure_inventory_open = MagicMock()
+    bot._slot_positions = MagicMock(return_value=[])
+    bot._drop_all_logs()
+    # press_shift should never be called if no slots
+    bot._keyboard.press_shift.assert_not_called()
