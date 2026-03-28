@@ -30,6 +30,17 @@ class MouseController:
         self._last_click = dest
         return dest
 
+    def right_click(self, target: Tuple[int, int]) -> Tuple[int, int]:
+        """Move along a Bezier curve to a jittered target, right-click, return actual pixel clicked."""
+        dest = self._unique_jitter(target)
+        path = self._bezier_path(self._current_pos(), dest, steps=random.randint(18, 30))
+        for pt in path:
+            self._mouse.position = pt
+            time.sleep(random.uniform(0.003, 0.012))
+        self._mouse.click(Button.right, 1)
+        self._last_click = dest
+        return dest
+
     def post_click_verify(
         self,
         pos: Tuple[int, int],

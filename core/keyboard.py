@@ -26,3 +26,11 @@ class KeyboardController:
         time.sleep(duration)
         self._key_ctrl.release(arrow)
         time.sleep(random.uniform(0.1, 0.4))
+
+    def press_shift(self) -> None:
+        """Hold the Shift key down (call release_shift when done)."""
+        self._key_ctrl.press(Key.shift)
+
+    def release_shift(self) -> None:
+        """Release the Shift key."""
+        self._key_ctrl.release(Key.shift)
