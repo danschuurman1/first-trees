@@ -35,12 +35,15 @@ class DowntimeScheduler:
         return False
 
     def next_break_end(self, now: datetime = None) -> str:
-        """Return 'HH:MM' of the end of the current active window, or empty string."""
+        """Return 'HH:MM' of the end of the current active window (with variance), or empty string."""
         if now is None:
             now = datetime.now()
         for w in self.windows:
             if now.weekday() not in w.days:
                 continue
+            variance = random.randint(-w.variance_minutes, w.variance_minutes)
             end_h, end_m = map(int, w.end_hhmm.split(":"))
-            return f"{end_h:02d}:{end_m:02d}"
+            end_dt = now.replace(hour=end_h, minute=end_m, second=0, microsecond=0)
+            end_dt += timedelta(minutes=variance)
+            return f"{end_dt.hour:02d}:{end_dt.minute:02d}"
         return ""
