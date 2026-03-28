@@ -30,7 +30,7 @@ class App(tk.Tk):
     def _build_ui(self) -> None:
         nb = ttk.Notebook(self)
         nb.pack(fill="both", expand=True, padx=4, pady=4)
-        self.bind("<Escape>", lambda _: self._stop_bot())
+        self.bind("<Escape>", lambda _: self._esc_stop())
 
         bot_names = list(BOT_REGISTRY.keys()) or ["Woodcutter"]
 
@@ -59,12 +59,6 @@ class App(tk.Tk):
             self._control_tab.force_stop_ui()
             return
 
-        # Wire ESC to also update the UI (only patch the keyboard callback, not stop())
-        def esc_stop():
-            self._active_bot.stop()
-            self.after(0, self._control_tab.force_stop_ui)
-        self._active_bot._keyboard._on_esc = esc_stop
-
         try:
             self._active_bot.start()
         except Exception as exc:
@@ -81,6 +75,10 @@ class App(tk.Tk):
             self._active_bot.stop()
             self._active_bot = None
         self._control_tab.set_status("Idle")
+
+    def _esc_stop(self) -> None:
+        self._stop_bot()
+        self._control_tab.force_stop_ui()
 
     def _save_config(self) -> None:
         self._cfg_mgr.save()
