@@ -29,8 +29,11 @@ class ControlTab(ttk.Frame):
                                         values=bot_names, state="readonly", width=20)
         self._bot_combo.grid(row=0, column=1, sticky="w", **pad)
 
-        self._toggle_btn = ttk.Button(self, text="Start", command=self._toggle)
-        self._toggle_btn.grid(row=1, column=0, columnspan=2, **pad)
+        self._start_btn = ttk.Button(self, text="Start", command=self._start)
+        self._start_btn.grid(row=1, column=0, **pad)
+
+        self._stop_btn = ttk.Button(self, text="Stop", command=self._stop, state="disabled")
+        self._stop_btn.grid(row=1, column=1, **pad)
 
         self._status_var = tk.StringVar(value="Idle")
         ttk.Label(self, textvariable=self._status_var, font=("Helvetica", 11, "bold")).grid(
@@ -51,14 +54,16 @@ class ControlTab(ttk.Frame):
         ttk.Label(self, text="Press ESC to halt bot at any time.",
                   foreground="gray").grid(row=6, column=0, columnspan=2, **pad)
 
-    def _toggle(self) -> None:
-        if self._toggle_btn["text"] == "Start":
-            self._start_time = datetime.now()
-            self._toggle_btn.configure(text="Stop")
-            self._on_start(self._bot_var.get())
-        else:
-            self._toggle_btn.configure(text="Start")
-            self._on_stop()
+    def _start(self) -> None:
+        self._start_time = datetime.now()
+        self._start_btn.configure(state="disabled")
+        self._stop_btn.configure(state="normal")
+        self._on_start(self._bot_var.get())
+
+    def _stop(self) -> None:
+        self._start_btn.configure(state="normal")
+        self._stop_btn.configure(state="disabled")
+        self._on_stop()
 
     def set_status(self, msg: str) -> None:
         self._status_var.set(msg)
@@ -78,5 +83,6 @@ class ControlTab(ttk.Frame):
 
     def force_stop_ui(self) -> None:
         """Called when ESC halts the bot externally."""
-        self._toggle_btn.configure(text="Start")
+        self._start_btn.configure(state="normal")
+        self._stop_btn.configure(state="disabled")
         self._status_var.set("Halted (ESC)")
