@@ -13,12 +13,8 @@ from core.screen import ScreenCapture
 from core.scheduler import DowntimeScheduler
 
 
-HOME_TILE = (3105, 3231)
-CLUSTER_CENTER = (3106, 3230)
-TREE_TILES: List[Tuple[int, int]] = [
-    (3105, 3232), (3107, 3231), (3106, 3228), (3108, 3229)
-]
-BOUNDARY = 10  # Chebyshev
+# OSRS right-panel inventory tab icon (backpack) — fixed client layout
+INVENTORY_TAB = (644, 169)
 
 
 def chebyshev(a: Tuple[int, int], b: Tuple[int, int]) -> int:
@@ -28,12 +24,11 @@ def chebyshev(a: Tuple[int, int], b: Tuple[int, int]) -> int:
 class WoodcutterBot(Bot):
     """
     Woodcutting bot decision tree:
-      1. In expected location?   NO  → walk home, or halt
-      2. Inventory full?         YES → drop log (or halt if no logs)
-      3. Currently chopping?     YES (anim_color enabled) → wait for idle
-      4. Tree available?         YES → click nearest tree, then wait for
-                                       that tree's color to disappear
-                                 NO  → wait 2-4s
+      1. Inventory full?  YES → open inventory tab, drop one log, repeat
+      2. Animating?       YES (only when anim_color enabled) → wait for idle
+      3. Tree visible?    YES → click it, wait for its cyan to disappear
+                          NO  → wait for respawn (no camera movement)
+    Camera is never rotated — bot operates from a fixed position.
     """
 
     name = "Woodcutter"
@@ -50,7 +45,6 @@ class WoodcutterBot(Bot):
             self._cfg.downtime_windows,
             enabled=self._cfg.scheduler_enabled,
         )
-        self._no_anim_since: Optional[float] = None
 
     def run_loop(self) -> None:
         # Scheduled break check
@@ -60,74 +54,46 @@ class WoodcutterBot(Bot):
             self.random_sleep(30, 60)
             return
 
-        # 1. Location check
-        if not self._player_in_bounds():
-            self.log("Out of bounds — walking to home tile")
-            if not self._walk_home():
-                self.log("HALT: walk home failed")
-                self.stop()
-                return
-            self.micro_pause()
-            return
-
-        # 2. Inventory full?
+        # 1. Inventory full → ensure tab open, drop one log, loop back
         if self._inventory_full():
             if self._inventory_has_logs():
                 self.log("Inventory full — dropping one log")
+                self._open_inventory_tab()
                 self._drop_one_log()
-                self.micro_pause()
+                self.random_sleep(0.8, 1.2)  # wait for drop to register
                 return
             else:
                 self.log("HALT: inventory full but no logs found")
                 self.stop()
                 return
 
-        # 3. Currently animating (chopping)?
+        # 2. Currently animating? (only fires if anim_color is explicitly enabled)
         if self._is_animating():
             self.log("Chopping — waiting for idle")
             self._wait_for_idle()
             self.micro_pause()
             return
 
-        # 4. Find and click a living tree
+        # 3. Find and click a living tree, then wait for it to be cut
         tree_pos = self._nearest_living_tree()
         if tree_pos is not None:
             self.log(f"Clicking tree at {tree_pos}")
-            clicked = self._mouse.move_and_click(tree_pos)
+            self._mouse.move_and_click(tree_pos)
             self.micro_pause()
-            if not self._mouse.post_click_verify(clicked, self._cfg.tree_color):
-                self.log("Post-click mismatch — rotating camera and re-scanning")
-                for _ in range(3):
-                    self._keyboard.rotate_camera()
-                    self.random_sleep(self._cfg.min_delay, self._cfg.max_delay)
-                    tree_pos = self._nearest_living_tree()
-                    if tree_pos:
-                        self._mouse.move_and_click(tree_pos)
-                        break
-                else:
-                    self.log("Target lost after 3 rotation attempts")
-            else:
-                # anim_color not configured: watch for THIS tree's cyan to disappear
-                if not self._cfg.anim_color.enabled:
-                    self._wait_for_tree_gone(tree_pos)
+            # Wait for this specific tree's cyan to vanish (chop complete)
+            if not self._cfg.anim_color.enabled:
+                self._wait_for_tree_gone(tree_pos)
         else:
-            self.log("No living trees — waiting 2-4s")
-            self.random_sleep(2.0, 4.0)
+            # No trees visible — wait quietly for respawn, no camera movement
+            self.log("No living trees — waiting for respawn")
+            self.random_sleep(3.0, 6.0)
 
         self.random_sleep(self._cfg.min_delay, self._cfg.max_delay)
 
-    def _player_in_bounds(self) -> bool:
-        if not self._cfg.player_color.enabled:
-            return True
-        region = self._screen.grab((0, 0, 800, 600))
-        cluster = self._color.best_cluster(region, self._cfg.player_color)
-        return cluster is not None
-
-    def _walk_home(self) -> bool:
-        minimap_center = (732, 108)
-        self._mouse.move_and_click(minimap_center)
-        self.random_sleep(2.0, 4.0)
-        return True
+    def _open_inventory_tab(self) -> None:
+        """Click the inventory (backpack) tab to make sure it is open."""
+        self._mouse.move_and_click(INVENTORY_TAB)
+        self.random_sleep(0.2, 0.4)
 
     def _inventory_full(self) -> bool:
         if not self._cfg.log_color.enabled:
