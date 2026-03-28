@@ -35,7 +35,7 @@ class BotConfig:
     tree_color: ColorProfile = field(default_factory=ColorProfile)
     stump_color: ColorProfile = field(default_factory=ColorProfile)
     log_color: ColorProfile = field(default_factory=ColorProfile)
-    anim_color: ColorProfile = field(default_factory=ColorProfile)
+    anim_color: ColorProfile = field(default_factory=lambda: ColorProfile(enabled=False))
     player_color: ColorProfile = field(default_factory=ColorProfile)
     # Timing
     min_delay: float = 0.4

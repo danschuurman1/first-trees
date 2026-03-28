@@ -30,8 +30,9 @@ class WoodcutterBot(Bot):
     Woodcutting bot decision tree:
       1. In expected location?   NO  → walk home, or halt
       2. Inventory full?         YES → drop log (or halt if no logs)
-      3. Currently chopping?     YES → wait for idle
-      4. Tree available?         YES → click nearest tree
+      3. Currently chopping?     YES (anim_color enabled) → wait for idle
+      4. Tree available?         YES → click nearest tree, then wait for
+                                       that tree's color to disappear
                                  NO  → wait 2-4s
     """
 
@@ -105,6 +106,10 @@ class WoodcutterBot(Bot):
                         break
                 else:
                     self.log("Target lost after 3 rotation attempts")
+            else:
+                # anim_color not configured: watch for THIS tree's cyan to disappear
+                if not self._cfg.anim_color.enabled:
+                    self._wait_for_tree_gone(tree_pos)
         else:
             self.log("No living trees — waiting 2-4s")
             self.random_sleep(2.0, 4.0)
@@ -165,6 +170,26 @@ class WoodcutterBot(Bot):
                 return
             self.random_sleep(0.5, 1.0)
         self.log("Animation wait timed out")
+
+    def _wait_for_tree_gone(self, pos: Tuple[int, int]) -> None:
+        """Poll until the tree color near pos disappears (chop complete) or timeout."""
+        self.log("Waiting for tree to be cut...")
+        deadline = time.monotonic() + 35.0
+        while time.monotonic() < deadline and self._running.is_set():
+            viewport = self._screen.grab((4, 4, 512, 334))
+            clusters = self._color.find_clusters(
+                viewport, self._cfg.tree_color, region_offset=(4, 4)
+            )
+            # Tree still present near original click position?
+            still_there = any(
+                max(abs(c[0] - pos[0]), abs(c[1] - pos[1])) < 25
+                for c in clusters
+            )
+            if not still_there:
+                self.log("Tree cut — looking for next")
+                return
+            self.random_sleep(0.5, 1.0)
+        self.log("Tree chop wait timed out")
 
     def _nearest_living_tree(self) -> Optional[Tuple[int, int]]:
         if not self._cfg.tree_color.enabled:
