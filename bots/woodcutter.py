@@ -147,6 +147,7 @@ class WoodcutterBot(Bot):
         )
         if cluster:
             self._mouse.move_and_click(cluster)
+            self.micro_pause()
             self.random_sleep(0.3, 0.6)
             drop_pos = (cluster[0], cluster[1] + 40)
             self._mouse.move_and_click(drop_pos)
