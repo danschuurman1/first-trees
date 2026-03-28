@@ -52,12 +52,10 @@ class App(tk.Tk):
             return
         self._active_bot = BotClass(config=self._cfg)
 
-        # Wire ESC to also update the UI
-        original_stop = self._active_bot.stop
+        # Wire ESC to also update the UI (only patch the keyboard callback, not stop())
         def esc_stop():
-            original_stop()
+            self._active_bot.stop()
             self.after(0, self._control_tab.force_stop_ui)
-        self._active_bot.stop = esc_stop
         self._active_bot._keyboard._on_esc = esc_stop
 
         self._active_bot.start()
