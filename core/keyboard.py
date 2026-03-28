@@ -2,7 +2,6 @@
 from __future__ import annotations
 import random
 import time
-import threading
 from typing import Callable, Optional
 
 from pynput.keyboard import Key, Controller as KeyCtrl, Listener
@@ -28,7 +27,7 @@ class KeyboardController:
             self._listener.stop()
             self._listener = None
 
-    def rotate_camera(self, attempts: int = 1) -> None:
+    def rotate_camera(self) -> None:
         """Press a random arrow key for a random duration to rotate the camera."""
         arrow = random.choice([Key.left, Key.right])
         duration = random.uniform(0.3, 0.8)
