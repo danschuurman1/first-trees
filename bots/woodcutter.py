@@ -45,14 +45,24 @@ class WoodcutterBot(Bot):
         self._color = ColorDetector()
         self._mouse = MouseController()
         self._keyboard = KeyboardController(on_esc=self.stop)
-        self._keyboard.start_listener()
+        # Listener is started inside the bot thread to avoid conflicting
+        # with the tkinter run loop on macOS
         self._scheduler = DowntimeScheduler(
             self._cfg.downtime_windows,
             enabled=self._cfg.scheduler_enabled,
         )
         self._no_anim_since: Optional[float] = None
+        self._listener_started = False
 
     def run_loop(self) -> None:
+        # Start keyboard listener once, inside the bot thread (safe on macOS)
+        if not self._listener_started:
+            try:
+                self._keyboard.start_listener()
+            except Exception as e:
+                self.log(f"Keyboard listener unavailable: {e} (ESC won't work)")
+            self._listener_started = True
+
         # Scheduled break check
         if self._scheduler.is_break_time():
             end = self._scheduler.next_break_end()

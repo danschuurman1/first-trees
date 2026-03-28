@@ -18,6 +18,7 @@ class ColorSlot(ttk.LabelFrame):
         super().__init__(parent, text=label)
         self._profile = profile
         self._on_change = on_change
+        self._updating_hex = False
         self._build(enable_toggle)
         self._refresh_swatch()
 
@@ -37,6 +38,13 @@ class ColorSlot(ttk.LabelFrame):
 
         ttk.Button(self, text="Pick", command=self._pick_color).grid(row=row, column=1, padx=2)
 
+        # Hex input field — paste #FF0000 style codes directly from RuneScape object markers
+        ttk.Label(self, text="Hex:").grid(row=row, column=2, sticky="e", padx=2)
+        self._hex_var = tk.StringVar(value=_rgb_to_hex(self._profile.r, self._profile.g, self._profile.b))
+        hex_entry = ttk.Entry(self, textvariable=self._hex_var, width=8)
+        hex_entry.grid(row=row, column=3, padx=2)
+        self._hex_var.trace_add("write", lambda *_: self._apply_hex())
+
         for i, (ch, attr) in enumerate([("R", "r"), ("G", "g"), ("B", "b")]):
             ttk.Label(self, text=ch).grid(row=row + 1, column=i, sticky="e", padx=2)
             var = tk.IntVar(value=getattr(self._profile, attr))
@@ -50,6 +58,25 @@ class ColorSlot(ttk.LabelFrame):
         self._tol_var = tk.IntVar(value=self._profile.tolerance)
         ttk.Scale(self, from_=0, to=50, variable=self._tol_var, orient="horizontal",
                   length=80, command=lambda _: self._commit()).grid(row=row + 2, column=3, padx=2)
+
+    def _apply_hex(self) -> None:
+        """Parse the hex entry and update the RGB spinboxes."""
+        raw = self._hex_var.get().strip().lstrip("#")
+        if len(raw) != 6:
+            return
+        try:
+            r = int(raw[0:2], 16)
+            g = int(raw[2:4], 16)
+            b = int(raw[4:6], 16)
+        except ValueError:
+            return
+        # Update spinboxes without triggering a hex refresh loop
+        self._updating_hex = True
+        self._r_var.set(r)
+        self._g_var.set(g)
+        self._b_var.set(b)
+        self._updating_hex = False
+        self._commit()
 
     def _pick_color(self) -> None:
         init = _rgb_to_hex(self._profile.r, self._profile.g, self._profile.b)
@@ -73,7 +100,11 @@ class ColorSlot(ttk.LabelFrame):
         self._on_change()
 
     def _refresh_swatch(self) -> None:
-        self._swatch.configure(bg=_rgb_to_hex(self._profile.r, self._profile.g, self._profile.b))
+        hex_val = _rgb_to_hex(self._profile.r, self._profile.g, self._profile.b)
+        self._swatch.configure(bg=hex_val)
+        # Sync hex field without re-triggering _apply_hex
+        if not getattr(self, "_updating_hex", False):
+            self._hex_var.set(hex_val)
 
 
 class ColorTab(ttk.Frame):

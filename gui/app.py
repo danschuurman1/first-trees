@@ -30,6 +30,7 @@ class App(tk.Tk):
     def _build_ui(self) -> None:
         nb = ttk.Notebook(self)
         nb.pack(fill="both", expand=True, padx=4, pady=4)
+        self.bind("<Escape>", lambda _: self._stop_bot())
 
         bot_names = list(BOT_REGISTRY.keys()) or ["Woodcutter"]
 
@@ -50,7 +51,13 @@ class App(tk.Tk):
         if not BotClass:
             self._log_tab.append(f"Unknown bot: {bot_name}")
             return
-        self._active_bot = BotClass(config=self._cfg)
+        try:
+            self._active_bot = BotClass(config=self._cfg)
+        except Exception as exc:
+            self._log_tab.append(f"ERROR creating bot: {exc}")
+            self._control_tab.set_status(f"Error: {exc}")
+            self._control_tab.force_stop_ui()
+            return
 
         # Wire ESC to also update the UI (only patch the keyboard callback, not stop())
         def esc_stop():
@@ -58,7 +65,14 @@ class App(tk.Tk):
             self.after(0, self._control_tab.force_stop_ui)
         self._active_bot._keyboard._on_esc = esc_stop
 
-        self._active_bot.start()
+        try:
+            self._active_bot.start()
+        except Exception as exc:
+            self._log_tab.append(f"ERROR starting bot: {exc}")
+            self._control_tab.set_status(f"Error: {exc}")
+            self._control_tab.force_stop_ui()
+            return
+
         self._control_tab.set_status("Running")
         self._log_tab.append(f"Started bot: {bot_name}")
 
