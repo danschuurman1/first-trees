@@ -146,7 +146,7 @@ def test_drop_all_logs_shift_clicks_every_log_cluster():
     bot._ensure_inventory_open = MagicMock()
     positions = [(580, 220), (604, 220), (628, 220)]
     bot._slot_positions = MagicMock(return_value=positions)
-    bot._is_slot_filled = MagicMock(return_value=True)
+    bot._is_slot_log = MagicMock(return_value=True)
     bot._mouse.move_and_click.return_value = (580, 220)
     bot._drop_all_logs()
     assert bot._mouse.move_and_click.call_count == len(positions)
@@ -159,7 +159,7 @@ def test_drop_all_logs_releases_shift_even_when_no_logs():
     bot = _make_bot()
     bot._ensure_inventory_open = MagicMock()
     bot._slot_positions = MagicMock(return_value=[])
-    bot._is_slot_filled = MagicMock(return_value=False)
+    bot._is_slot_log = MagicMock(return_value=False)
     bot._drop_all_logs()
     press_count = bot._keyboard.press_shift.call_count
     release_count = bot._keyboard.release_shift.call_count
@@ -278,7 +278,7 @@ def test_drop_all_logs_skips_empty_slots():
     filled_positions = {0, 5}
     all_slots = [(i * 10, i * 10) for i in range(28)]
     bot._slot_positions = MagicMock(return_value=all_slots)
-    bot._is_slot_filled = MagicMock(side_effect=lambda pos: all_slots.index(pos) in filled_positions)
+    bot._is_slot_log = MagicMock(side_effect=lambda pos: all_slots.index(pos) in filled_positions)
     bot._mouse.move_and_click.return_value = (0, 0)
     bot._drop_all_logs()
     assert bot._mouse.move_and_click.call_count == 2
@@ -289,7 +289,7 @@ def test_drop_all_logs_holds_shift_around_clicks():
     bot._ensure_inventory_open = MagicMock()
     all_slots = [(i * 10, 0) for i in range(3)]
     bot._slot_positions = MagicMock(return_value=all_slots)
-    bot._is_slot_filled = MagicMock(return_value=True)
+    bot._is_slot_log = MagicMock(return_value=True)
     bot._mouse.move_and_click.return_value = (0, 0)
     bot._drop_all_logs()
     bot._keyboard.press_shift.assert_called_once()
@@ -300,6 +300,7 @@ def test_drop_all_logs_releases_shift_when_no_slots():
     bot = _make_bot()
     bot._ensure_inventory_open = MagicMock()
     bot._slot_positions = MagicMock(return_value=[])
+    bot._is_slot_log = MagicMock(return_value=False)
     bot._drop_all_logs()
     # press_shift should never be called if no slots
     bot._keyboard.press_shift.assert_not_called()

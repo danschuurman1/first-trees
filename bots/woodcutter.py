@@ -1,5 +1,7 @@
 # bots/woodcutter.py
 from __future__ import annotations
+import math
+import random
 import time
 from typing import List, Optional, Set, Tuple
 
@@ -9,8 +11,27 @@ from bots.base_bot import Bot
 from config import BotConfig, ConfigManager
 from core.calibrate import find_runelight_origin
 from core.color import ColorDetector
+from core.keyboard import KeyboardController
 from core.mouse import MouseController
 from core.screen import ScreenCapture
+
+# OSRS fixed client inventory grid (all coords relative to client origin)
+_INV_TAB_X = 644      # backpack tab icon x (client-relative)
+_INV_TAB_Y = 169      # backpack tab icon y (client-relative)
+_INV_GRID_X = 548     # left edge of inventory grid (client-relative)
+_INV_GRID_Y = 205     # top edge of inventory grid (client-relative)
+_INV_SLOT_W = 42      # horizontal pitch between slot centres
+_INV_SLOT_H = 36      # vertical pitch between slot centres
+_INV_COLS = 4
+_INV_ROWS = 7
+
+# Inventory tab: red (active/open) vs grey (inactive/closed)
+_INV_OPEN_R_MIN = 100
+_INV_OPEN_BIAS  = 50
+
+# A slot is "filled" when its centre pixel has max(R,G,B) above this level.
+# Empty slot background is ~rgb(55, 52, 48); any item is brighter.
+_SLOT_FILLED_THRESHOLD = 65
 
 # Radius (px) scanned around the active tree position for cut signals
 _SCAN_RADIUS = 80
@@ -26,6 +47,10 @@ _BASELINE_EXCLUSION_RADIUS = 15
 # Pre-click verification: region size and minimum cyan pixel count required
 _VERIFY_RADIUS = 15          # grab a 30x30 region around the centroid
 _VERIFY_MIN_PIXELS = 10      # must have at least this many cyan pixels to confirm
+
+
+def chebyshev(a: Tuple[int, int], b: Tuple[int, int]) -> int:
+    return max(abs(a[0] - b[0]), abs(a[1] - b[1]))
 
 
 class WoodcutterBot(Bot):
@@ -49,6 +74,7 @@ class WoodcutterBot(Bot):
         self._screen = ScreenCapture()
         self._color = ColorDetector()
         self._mouse = MouseController()
+        self._keyboard = KeyboardController()
         self._origin: Tuple[int, int] = find_runelight_origin()
 
     # ------------------------------------------------------------------
@@ -56,27 +82,7 @@ class WoodcutterBot(Bot):
     # ------------------------------------------------------------------
 
     def run_loop(self) -> None:
-        ox, oy = self._origin
-        viewport = self._screen.grab((ox + 4, oy + 4, 512, 334))
-
-        # Color2 override: if enabled, check first
-        tree_pos = None
-        if self._cfg.color2.enabled:
-            tree_pos = self._color.best_cluster(
-                viewport, self._cfg.color2, region_offset=(ox + 4, oy + 4)
-            )
-
-        # Primary tree color (cyan)
-        if tree_pos is None and self._cfg.tree_color.enabled:
-            clusters = self._color.find_clusters(
-                viewport, self._cfg.tree_color, region_offset=(ox + 4, oy + 4)
-            )
-            if clusters:
-                center = (ox + 4 + 512 // 2, oy + 4 + 334 // 2)
-                tree_pos = min(
-                    clusters,
-                    key=lambda c: max(abs(c[0] - center[0]), abs(c[1] - center[1]))
-                )
+        tree_pos = self._nearest_living_tree()
 
         if tree_pos is not None:
             if not self._confirm_cyan_at(tree_pos):
@@ -107,8 +113,120 @@ class WoodcutterBot(Bot):
 
             self.random_sleep(1.0, 3.0)
         else:
-            self.log("No trees found — waiting for respawn")
+            self.log("No trees found — dropping logs and waiting for respawn")
+            self._drop_all_logs()
             self.random_sleep(2.0, 4.0)
+
+    # ------------------------------------------------------------------
+    # Inventory helpers
+    # ------------------------------------------------------------------
+
+    def _slot_positions(self) -> List[Tuple[int, int]]:
+        """Return screen (x, y) centres for all 28 inventory slots."""
+        ox, oy = self._origin
+        positions: List[Tuple[int, int]] = []
+        for row in range(_INV_ROWS):
+            for col in range(_INV_COLS):
+                x = ox + _INV_GRID_X + col * _INV_SLOT_W + _INV_SLOT_W // 2
+                y = oy + _INV_GRID_Y + row * _INV_SLOT_H + _INV_SLOT_H // 2
+                positions.append((x, y))
+        return positions
+
+    def _is_slot_filled(self, pos: Tuple[int, int]) -> bool:
+        """Empty slots are ~rgb(55,52,48). Any item raises max(R,G,B) above threshold."""
+        r, g, b = self._screen.pixel_color(pos[0], pos[1])
+        return max(r, g, b) > _SLOT_FILLED_THRESHOLD
+
+    def _is_slot_log(self, pos: Tuple[int, int]) -> bool:
+        """Return True if the slot centre pixel matches the log_color profile."""
+        if not self._cfg.log_color.enabled:
+            return False
+        profile = self._cfg.log_color
+        r, g, b = self._screen.pixel_color(pos[0], pos[1])
+        dist = math.sqrt(
+            (r - profile.r) ** 2 + (g - profile.g) ** 2 + (b - profile.b) ** 2
+        )
+        return dist <= profile.tolerance
+
+    def _count_filled_slots(self) -> int:
+        return sum(1 for pos in self._slot_positions() if self._is_slot_filled(pos))
+
+    def _is_inventory_open(self) -> bool:
+        """Red tab background = open; grey = closed."""
+        ox, oy = self._origin
+        r, g, b = self._screen.pixel_color(ox + _INV_TAB_X, oy + _INV_TAB_Y)
+        return r > _INV_OPEN_R_MIN and r > g + _INV_OPEN_BIAS and r > b + _INV_OPEN_BIAS
+
+    def _ensure_inventory_open(self) -> None:
+        """Click the backpack tab only when it is currently closed."""
+        if not self._is_inventory_open():
+            ox, oy = self._origin
+            self._mouse.move_and_click((ox + _INV_TAB_X, oy + _INV_TAB_Y))
+            self.random_sleep(0.2, 0.4)
+
+    def _inventory_full(self) -> bool:
+        self._ensure_inventory_open()
+        return self._count_filled_slots() >= 28
+
+    def _inventory_has_logs(self) -> bool:
+        self._ensure_inventory_open()
+        return self._count_filled_slots() > 0
+
+    def _drop_all_logs(self) -> None:
+        """Hold Shift and left-click every log slot in a randomized order."""
+        self._ensure_inventory_open()
+        if self._cfg.log_color.enabled:
+            log_slots = [pos for pos in self._slot_positions() if self._is_slot_log(pos)]
+        else:
+            log_slots = [pos for pos in self._slot_positions() if self._is_slot_filled(pos)]
+        if not log_slots:
+            return
+        random.shuffle(log_slots)
+        if random.random() < 0.30:
+            mid = random.randint(1, len(log_slots))
+            log_slots = log_slots[mid:] + log_slots[:mid]
+        self._keyboard.press_shift()
+        try:
+            for pos in log_slots:
+                self._mouse.move_and_click(pos)
+                self.micro_pause()
+        finally:
+            self._keyboard.release_shift()
+
+    # ------------------------------------------------------------------
+    # Tree detection
+    # ------------------------------------------------------------------
+
+    def _nearest_living_tree(self) -> Optional[Tuple[int, int]]:
+        """Scan viewport for cyan tree blobs and return the nearest centroid."""
+        ox, oy = self._origin
+        viewport = self._screen.grab((ox + 4, oy + 4, 512, 334))
+        clusters = self._color.find_clusters(
+            viewport, self._cfg.tree_color, region_offset=(ox + 4, oy + 4)
+        )
+        if not clusters:
+            return None
+        center = (ox + 4 + 512 // 2, oy + 4 + 334 // 2)
+        return min(
+            clusters,
+            key=lambda c: max(abs(c[0] - center[0]), abs(c[1] - center[1]))
+        )
+
+    def _wait_for_tree_gone(self, pos: Tuple[int, int]) -> None:
+        """Poll pos pixel until it no longer matches tree_color."""
+        self.log("Waiting for tree to be cut...")
+        deadline = time.monotonic() + 35.0
+        profile = self._cfg.tree_color
+        while time.monotonic() < deadline and self._running.is_set():
+            r, g, b = self._screen.pixel_color(pos[0], pos[1])
+            dist = math.sqrt(
+                (r - profile.r) ** 2 + (g - profile.g) ** 2 + (b - profile.b) ** 2
+            )
+            if dist > profile.tolerance:
+                self.log("Tree cut — looking for next")
+                return
+            self.random_sleep(0.5, 1.0)
+        self.log("Tree chop wait timed out")
 
     # ------------------------------------------------------------------
     # Pre-click cyan verification
