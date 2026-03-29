@@ -39,24 +39,30 @@ class ControlTab(ttk.Frame):
         ttk.Label(self, textvariable=self._status_var, font=("Helvetica", 11, "bold")).grid(
             row=2, column=0, columnspan=2, **pad)
 
-        ttk.Label(self, text="Logs dropped:").grid(row=3, column=0, sticky="e", **pad)
-        self._logs_var = tk.StringVar(value="0")
-        ttk.Label(self, textvariable=self._logs_var).grid(row=3, column=1, sticky="w", **pad)
-
-        ttk.Label(self, text="Runtime:").grid(row=4, column=0, sticky="e", **pad)
+        ttk.Label(self, text="Runtime:").grid(row=3, column=0, sticky="e", **pad)
         self._runtime_var = tk.StringVar(value="00:00:00")
-        ttk.Label(self, textvariable=self._runtime_var).grid(row=4, column=1, sticky="w", **pad)
+        ttk.Label(self, textvariable=self._runtime_var).grid(row=3, column=1, sticky="w", **pad)
 
-        ttk.Label(self, text="Loops/min:").grid(row=5, column=0, sticky="e", **pad)
+        ttk.Label(self, text="Loops/min:").grid(row=4, column=0, sticky="e", **pad)
         self._lpm_var = tk.StringVar(value="0")
-        ttk.Label(self, textvariable=self._lpm_var).grid(row=5, column=1, sticky="w", **pad)
+        ttk.Label(self, textvariable=self._lpm_var).grid(row=4, column=1, sticky="w", **pad)
 
         ttk.Label(self, text="Press ESC to halt bot at any time.",
-                  foreground="gray").grid(row=6, column=0, columnspan=2, **pad)
+                  foreground="gray").grid(row=5, column=0, columnspan=2, **pad)
 
-        ttk.Label(self, text="Emergency stop: touch /tmp/osrs_bot_stop",
-                  foreground="gray", font=("Helvetica", 8)).grid(
-            row=7, column=0, columnspan=2, **pad)
+        # Live log text box
+        log_frame = ttk.LabelFrame(self, text="Log")
+        log_frame.grid(row=6, column=0, columnspan=2, sticky="nsew", padx=8, pady=4)
+        self.columnconfigure(0, weight=1)
+        self.columnconfigure(1, weight=1)
+        self.rowconfigure(6, weight=1)
+
+        self._log_text = tk.Text(log_frame, height=12, wrap="word", state="disabled",
+                                  font=("Courier", 9))
+        vsb = ttk.Scrollbar(log_frame, orient="vertical", command=self._log_text.yview)
+        self._log_text.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        self._log_text.pack(side="left", fill="both", expand=True)
 
     def _start(self) -> None:
         self._start_time = datetime.now()
@@ -72,8 +78,11 @@ class ControlTab(ttk.Frame):
     def set_status(self, msg: str) -> None:
         self._status_var.set(msg)
 
-    def set_logs_dropped(self, n: int) -> None:
-        self._logs_var.set(str(n))
+    def append_log(self, msg: str) -> None:
+        self._log_text.configure(state="normal")
+        self._log_text.insert("end", msg + "\n")
+        self._log_text.see("end")
+        self._log_text.configure(state="disabled")
 
     def update_stats(self, loops: int) -> None:
         if self._start_time:
@@ -86,7 +95,6 @@ class ControlTab(ttk.Frame):
             self._lpm_var.set(f"{loops / minutes:.1f}")
 
     def force_stop_ui(self) -> None:
-        """Called when ESC halts the bot externally."""
         self._start_btn.configure(state="normal")
         self._stop_btn.configure(state="disabled")
         self._status_var.set("Halted (ESC)")

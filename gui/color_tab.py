@@ -41,9 +41,10 @@ class ColorSlot(ttk.LabelFrame):
         # Hex input field — paste #FF0000 style codes directly from RuneScape object markers
         ttk.Label(self, text="Hex:").grid(row=row, column=2, sticky="e", padx=2)
         self._hex_var = tk.StringVar(value=_rgb_to_hex(self._profile.r, self._profile.g, self._profile.b))
-        hex_entry = ttk.Entry(self, textvariable=self._hex_var, width=8)
-        hex_entry.grid(row=row, column=3, padx=2)
-        self._hex_var.trace_add("write", lambda *_: self._apply_hex())
+        self._hex_entry = ttk.Entry(self, textvariable=self._hex_var, width=8)
+        self._hex_entry.grid(row=row, column=3, padx=2)
+        self._hex_entry.bind("<Return>", lambda _: self._apply_hex())
+        self._hex_entry.bind("<FocusOut>", lambda _: self._apply_hex())
 
         for i, (ch, attr) in enumerate([("R", "r"), ("G", "g"), ("B", "b")]):
             ttk.Label(self, text=ch).grid(row=row + 1, column=i, sticky="e", padx=2)
@@ -60,7 +61,6 @@ class ColorSlot(ttk.LabelFrame):
                   length=80, command=lambda _: self._commit()).grid(row=row + 2, column=3, padx=2)
 
     def _apply_hex(self) -> None:
-        """Parse the hex entry and update the RGB spinboxes."""
         raw = self._hex_var.get().strip().lstrip("#")
         if len(raw) != 6:
             return
@@ -70,7 +70,6 @@ class ColorSlot(ttk.LabelFrame):
             b = int(raw[4:6], 16)
         except ValueError:
             return
-        # Update spinboxes without triggering a hex refresh loop
         self._updating_hex = True
         self._r_var.set(r)
         self._g_var.set(g)
@@ -102,9 +101,12 @@ class ColorSlot(ttk.LabelFrame):
     def _refresh_swatch(self) -> None:
         hex_val = _rgb_to_hex(self._profile.r, self._profile.g, self._profile.b)
         self._swatch.configure(bg=hex_val)
-        # Sync hex field without re-triggering _apply_hex
         if not getattr(self, "_updating_hex", False):
-            self._hex_var.set(hex_val)
+            try:
+                if self._hex_entry.focus_get() != self._hex_entry:
+                    self._hex_var.set(hex_val)
+            except Exception:
+                self._hex_var.set(hex_val)
 
 
 class ColorTab(ttk.Frame):
@@ -116,42 +118,69 @@ class ColorTab(ttk.Frame):
         self._build()
 
     def _build(self) -> None:
-        canvas = tk.Canvas(self)
+        # Scrollable canvas wrapper
+        canvas = tk.Canvas(self, borderwidth=0, highlightthickness=0)
         vsb = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
         canvas.configure(yscrollcommand=vsb.set)
         vsb.pack(side="right", fill="y")
         canvas.pack(side="left", fill="both", expand=True)
-        inner = ttk.Frame(canvas)
-        canvas.create_window((0, 0), window=inner, anchor="nw")
-        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
 
-        ttk.Label(inner, text="Primary Colors", font=("Helvetica", 10, "bold")).grid(
+        inner = ttk.Frame(canvas)
+        canvas_window = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        # Resize inner frame to canvas width when canvas resizes
+        def _on_canvas_resize(event):
+            canvas.itemconfig(canvas_window, width=event.width)
+        canvas.bind("<Configure>", _on_canvas_resize)
+
+        # Update scroll region when inner frame changes size
+        inner.bind("<Configure>", lambda e: canvas.configure(
+            scrollregion=canvas.bbox("all")
+        ))
+
+        # Mousewheel scrolling
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        # Build all widgets inside inner frame
+        pad = {"padx": 6, "pady": 4}
+
+        ttk.Label(inner, text="Tree Color (Cyan)", font=("Helvetica", 10, "bold")).grid(
             row=0, column=0, columnspan=2, pady=(8, 2))
 
-        ColorSlot(inner, "Color 1 (Primary)", self._cfg.color1,
-                  self._on_change).grid(row=1, column=0, padx=6, pady=4, sticky="nw")
-        ColorSlot(inner, "Color 2 (Override)", self._cfg.color2,
-                  self._on_change, enable_toggle=True).grid(row=1, column=1, padx=6, pady=4, sticky="nw")
+        ColorSlot(inner, "Tree Color (Primary)", self._cfg.tree_color,
+                  self._on_change).grid(row=1, column=0, columnspan=2, sticky="nw", **pad)
 
         ttk.Separator(inner, orient="horizontal").grid(row=2, column=0, columnspan=2,
                                                         sticky="ew", pady=6)
-        ttk.Label(inner, text="Game-State Profiles", font=("Helvetica", 10, "bold")).grid(
+        ttk.Label(inner, text="Stump Colors", font=("Helvetica", 10, "bold")).grid(
             row=3, column=0, columnspan=2, pady=(2, 2))
+        ttk.Label(inner, text="Set to depleted stump colors. Enable to use stump detection.",
+                  foreground="gray").grid(row=4, column=0, columnspan=2, pady=(0, 2))
 
-        profiles = [
-            ("Tree Color", self._cfg.tree_color),
-            ("Stump Color", self._cfg.stump_color),
-            ("Log Color", self._cfg.log_color),
-            ("Animation Indicator", self._cfg.anim_color),
-            ("Player Tile Indicator", self._cfg.player_color),
-        ]
-        for i, (label, prof) in enumerate(profiles):
-            row, col = divmod(i, 2)
-            ColorSlot(inner, label, prof, self._on_change).grid(
-                row=4 + row, column=col, padx=6, pady=4, sticky="nw")
+        ColorSlot(inner, "Stump Color (tree-cut signal)", self._cfg.stump_color,
+                  self._on_change, enable_toggle=True).grid(row=5, column=0, columnspan=2,
+                                                             sticky="nw", **pad)
+
+        ColorSlot(inner, "Stump Color 2 (tree-cut signal)", self._cfg.stump_color2,
+                  self._on_change, enable_toggle=True).grid(row=6, column=0, columnspan=2,
+                                                             sticky="nw", **pad)
+
+        ttk.Separator(inner, orient="horizontal").grid(row=7, column=0, columnspan=2,
+                                                        sticky="ew", pady=6)
+        ttk.Label(inner, text="Override Color", font=("Helvetica", 10, "bold")).grid(
+            row=8, column=0, columnspan=2, pady=(2, 2))
+
+        ColorSlot(inner, "Color 2 (Override — checked first)", self._cfg.color2,
+                  self._on_change, enable_toggle=True).grid(row=9, column=0, columnspan=2,
+                                                             sticky="nw", **pad)
+
+        ttk.Separator(inner, orient="horizontal").grid(row=10, column=0, columnspan=2,
+                                                        sticky="ew", pady=6)
 
         timing = ttk.LabelFrame(inner, text="Search Timing")
-        timing.grid(row=8, column=0, columnspan=2, padx=6, pady=8, sticky="ew")
+        timing.grid(row=11, column=0, columnspan=2, padx=6, pady=8, sticky="ew")
         ttk.Label(timing, text="Min delay (s):").grid(row=0, column=0, padx=4, pady=4)
         self._min_var = tk.DoubleVar(value=self._cfg.min_delay)
         ttk.Spinbox(timing, from_=0.1, to=5.0, increment=0.1, textvariable=self._min_var,

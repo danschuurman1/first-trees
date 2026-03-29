@@ -8,8 +8,9 @@ import numpy as np
 
 from config import ColorProfile
 
-# Minimum blob size (pixels) to not be treated as noise
-MIN_BLOB_PIXELS = 4
+# Minimum blob size (pixels) to not be treated as noise.
+# A real RuneLite tree highlight produces a much larger region than stray noise.
+MIN_BLOB_PIXELS = 20
 
 
 class ColorDetector:
