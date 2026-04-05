@@ -268,7 +268,8 @@ class ColorTab(ttk.Frame):
             ("hopper_color", "Hopper"),
             ("ladder_ascend_color", "Ladder Ascend"),
             ("ladder_descend_color", "Ladder Descend"),
-            ("sack_color", "Sack")
+            ("sack_color", "Sack"),
+            ("inv_ore_color", "Inventory Ore"),
         ]
         
         for key, label in mlm_slots:

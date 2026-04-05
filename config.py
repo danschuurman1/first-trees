@@ -52,7 +52,8 @@ class BotConfig:
     ladder_ascend_color: ColorProfile = field(default_factory=lambda: ColorProfile(enabled=False))
     ladder_descend_color: ColorProfile = field(default_factory=lambda: ColorProfile(enabled=False))
     sack_color: ColorProfile = field(default_factory=lambda: ColorProfile(enabled=False))
-    
+    inv_ore_color: ColorProfile = field(default_factory=lambda: ColorProfile(enabled=False))
+
     # Timing
     min_delay: float = 0.4
     max_delay: float = 1.2
@@ -95,7 +96,7 @@ def _bot_config_from_dict(d: dict) -> BotConfig:
         "bank_booth_color", "xp_drop_color", "grid_color",
         "bank_chest_color", "ore_active_color", "ore_depleted_color",
         "hopper_color", "ladder_ascend_color", "ladder_descend_color",
-        "sack_color"
+        "sack_color", "inv_ore_color"
     }
     for k, v in d.items():
         if k in profile_keys and isinstance(v, dict):
