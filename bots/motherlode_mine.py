@@ -1,7 +1,6 @@
 from __future__ import annotations
 import math
 import random
-import subprocess
 import time
 from typing import Optional, Tuple, List
 
@@ -256,60 +255,35 @@ class MotherlodeMineBot(Bot):
     # Helpers
     # ------------------------------------------------------------------
 
-    def _get_window_rect(self) -> Tuple[int, int, int, int]:
-        """
-        Return (left, top, width, height) of the OSRS content area in
-        absolute screen coordinates at the window's current position/size.
-        Falls back to (0, 0, 765, 503) if RuneLite is not found.
-        """
-        try:
-            r = subprocess.run(
-                ['osascript', '-e',
-                 'tell application "System Events" to tell process "RuneLite" '
-                 'to get {position, size} of window 1'],
-                capture_output=True, text=True, timeout=3,
-            )
-            if r.returncode == 0:
-                px, py, sw, sh = [int(v.strip()) for v in r.stdout.strip().split(',')]
-                title_bar = max(sh - 503, 0)
-                return (px, py + title_bar, sw, 503)
-        except Exception:
-            pass
-        return (0, 0, 765, 503)
-
     def _count_inventory_ore(self) -> int:
         """
-        Count inventory slots containing inv_ore_color by sampling the centre
-        pixel of each of the 28 slots.
+        Count inventory slots containing inv_ore_color.
 
-        Slot positions are derived proportionally from the current window size
-        so the grid stays accurate at any RuneLite resolution or stretch factor.
-        The reference layout is the OSRS fixed-mode 765×503 client:
-            slot-1 centre: (563, 213), step: (42, 36), grid: 4 cols × 7 rows.
-
-        Returns 0 if the profile is disabled. Maximum return value is 28.
+        Grabs the inventory panel as a single frame using self._origin
+        (the proven-correct content-area origin used by all other grabs),
+        then checks the centre pixel of each of the 28 slots directly from
+        the numpy array — no per-pixel grab calls, Retina-safe.
+        Maximum return value is 28.
         """
         profile = getattr(self._cfg, "inv_ore_color", None)
         if not profile or not profile.enabled:
             return 0
 
-        left, top, width, height = self._get_window_rect()
+        ox, oy = self._origin
+        # Grab the inventory panel in one call (absolute screen coords).
+        frame = self._screen.grab((ox + 548, oy + 205, 172, 252))
 
-        # Scale reference slot geometry to actual window dimensions.
-        sx = width  / 765
-        sy = height / 503
-        origin_x = round(563 * sx)
-        origin_y = round(213 * sy)
-        step_x   = round(42  * sx)
-        step_y   = round(36  * sy)
+        # Slot-1 centre within the panel frame, and step between slots.
+        slot_ox, slot_oy = 15, 8
+        step_x, step_y   = 42, 36
 
         count = 0
         for slot in range(4 * 7):
             col = slot % 4
             row = slot // 4
-            abs_x = left + origin_x + col * step_x
-            abs_y = top  + origin_y + row * step_y
-            r, g, b = self._screen.pixel_color(abs_x, abs_y)
+            px = slot_ox + col * step_x
+            py = slot_oy + row * step_y
+            b, g, r = int(frame[py, px, 0]), int(frame[py, px, 1]), int(frame[py, px, 2])
             dist = ((r - profile.r) ** 2 +
                     (g - profile.g) ** 2 +
                     (b - profile.b) ** 2) ** 0.5
