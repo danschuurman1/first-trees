@@ -1,8 +1,12 @@
 from __future__ import annotations
 import math
 import random
+import subprocess
 import time
 from typing import Optional, Tuple, List
+
+import cv2
+import numpy as np
 
 from bots.base_bot import Bot
 from config import BotConfig
@@ -57,6 +61,7 @@ class MotherlodeMineBot(Bot):
         self._color = ColorDetector()
         self._mouse = MouseController()
         self._origin: Tuple[int, int] = (0, 0)
+        self._window_region: tuple = (0, 0, 765, 503)
 
         self._state = "FIND_ORE"
         self._active_click: Optional[Tuple[int, int]] = None
@@ -257,38 +262,171 @@ class MotherlodeMineBot(Bot):
 
     def _count_inventory_ore(self) -> int:
         """
-        Count inventory slots containing inv_ore_color.
-
-        Grabs the inventory panel as a single frame using self._origin
-        (the proven-correct content-area origin used by all other grabs),
-        then checks the centre pixel of each of the 28 slots directly from
-        the numpy array — no per-pixel grab calls, Retina-safe.
-        Maximum return value is 28.
+        Count inventory slots containing inv_ore_color using the same
+        dynamic band-detection approach as WillowBankerBot.
+        Returns 0 if the profile is disabled. Maximum is 28.
         """
         profile = getattr(self._cfg, "inv_ore_color", None)
         if not profile or not profile.enabled:
             return 0
+        window = self._grab_window()
+        return self._count_ore_in_window(window)
 
-        ox, oy = self._origin
-        # Grab the inventory panel in one call (absolute screen coords).
-        frame = self._screen.grab((ox + 548, oy + 205, 172, 252))
+    def _activate_runelite(self) -> None:
+        """Bring RuneLite to the front so the capture sees the real client."""
+        try:
+            subprocess.run(
+                ["osascript", "-e", 'tell application "RuneLite" to activate'],
+                capture_output=True,
+                timeout=2,
+            )
+            time.sleep(0.25)
+        except Exception as exc:
+            self.log(f"RuneLite activation failed: {exc}")
 
-        # Slot-1 centre within the panel frame, and step between slots.
-        slot_ox, slot_oy = 15, 8
-        step_x, step_y   = 42, 36
+    def _resolve_window_region(self) -> tuple[int, int, int, int]:
+        """Get the live RuneLite window rectangle once at startup."""
+        script = (
+            'tell application "System Events" to tell process "RuneLite" '
+            'to get {position, size} of window 1'
+        )
+        try:
+            result = subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            if result.returncode == 0:
+                px, py, win_w, win_h = [int(v.strip()) for v in result.stdout.strip().split(",")]
+                region = (px, py, win_w, win_h)
+                self.log(f"RuneLite window region={region}")
+                return region
+        except Exception as exc:
+            self.log(f"RuneLite window lookup failed: {exc}")
+
+        fallback = (0, 0, 765, 503)
+        self.log(f"Falling back to default window region={fallback}")
+        return fallback
+
+    def _refresh_window_region(self) -> tuple[int, int, int, int]:
+        region = self._resolve_window_region()
+        if region != self._window_region:
+            self.log(f"RuneLite window region updated: {self._window_region} -> {region}")
+            self._window_region = region
+        return self._window_region
+
+    def _grab_window(self) -> np.ndarray:
+        """Focus RuneLite, refresh its geometry, then capture the live window."""
+        self._activate_runelite()
+        region = self._refresh_window_region()
+        return self._screen.grab(region)
+
+    def _inv_ore_mask(self, img: np.ndarray) -> np.ndarray:
+        """Return a binary mask of pixels matching the configured inv_ore_color."""
+        profile = getattr(self._cfg, "inv_ore_color", None)
+        if not profile or not profile.enabled:
+            return np.zeros(img.shape[:2], dtype=bool)
+        arr = img.astype(np.int32)
+        b = arr[:, :, 0]
+        g = arr[:, :, 1]
+        r = arr[:, :, 2]
+        dist = np.sqrt(
+            (r - profile.r) ** 2 +
+            (g - profile.g) ** 2 +
+            (b - profile.b) ** 2
+        )
+        return dist <= profile.tolerance
+
+    def _merge_mask(self, mask: np.ndarray) -> np.ndarray:
+        """
+        Expand thin highlighted outlines into solid per-item bands without
+        merging neighboring inventory rows/columns together.
+        """
+        h, w = mask.shape
+        kx = self._odd(max(5, int(round(w / 160))))
+        ky = self._odd(max(5, int(round(h / 140))))
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kx, ky))
+        merged = cv2.dilate(mask.astype(np.uint8), kernel, iterations=1)
+        self.log(f"Mask merge kernel={(kx, ky)}")
+        return merged > 0
+
+    def _odd(self, value: int) -> int:
+        return value if value % 2 == 1 else value + 1
+
+    def _find_bands(self, counts: np.ndarray, gap: int, min_span: int, min_mass: int) -> list[tuple[int, int]]:
+        """Find contiguous occupied bands along one axis."""
+        idx = np.where(counts > 0)[0]
+        if len(idx) == 0:
+            return []
+
+        bands: list[tuple[int, int]] = []
+        start = end = int(idx[0])
+        for value in idx[1:]:
+            value = int(value)
+            if value <= end + gap + 1:
+                end = value
+            else:
+                span = end - start + 1
+                mass = int(np.sum(counts[start:end + 1]))
+                if span >= min_span and mass >= min_mass:
+                    bands.append((start, end))
+                start = end = value
+        span = end - start + 1
+        mass = int(np.sum(counts[start:end + 1]))
+        if span >= min_span and mass >= min_mass:
+            bands.append((start, end))
+        return bands
+
+    def _top_bands(
+        self,
+        bands: list[tuple[int, int]],
+        counts: np.ndarray,
+        limit: int,
+    ) -> list[tuple[int, int]]:
+        """Keep the heaviest bands when extra noise bands are present."""
+        if len(bands) <= limit:
+            return bands
+        ranked = sorted(
+            bands,
+            key=lambda band: int(np.sum(counts[band[0]:band[1] + 1])),
+            reverse=True,
+        )
+        trimmed = sorted(ranked[:limit])
+        return trimmed
+
+    def _count_ore_in_window(self, window: np.ndarray) -> int:
+        """
+        Detect ore from the full RuneLite window without relying on fixed
+        inventory coordinates. The distinct ore highlight color defines the
+        occupied inventory cells directly.
+        """
+        raw_mask = self._inv_ore_mask(window)
+        merged_mask = self._merge_mask(raw_mask)
+
+        x_counts = merged_mask.sum(axis=0)
+        y_counts = merged_mask.sum(axis=1)
+
+        min_x_span = max(6, window.shape[1] // 80)
+        min_y_span = max(6, window.shape[0] // 90)
+        min_x_mass = max(10, window.shape[0] // 4)
+        min_y_mass = max(10, window.shape[1] // 4)
+        gap_x = max(3, window.shape[1] // 220)
+        gap_y = max(3, window.shape[0] // 180)
+
+        col_bands = self._find_bands(x_counts, gap_x, min_x_span, min_x_mass)
+        row_bands = self._find_bands(y_counts, gap_y, min_y_span, min_y_mass)
+        col_bands = self._top_bands(col_bands, x_counts, limit=4)
+        row_bands = self._top_bands(row_bands, y_counts, limit=7)
 
         count = 0
-        for slot in range(4 * 7):
-            col = slot % 4
-            row = slot // 4
-            px = slot_ox + col * step_x
-            py = slot_oy + row * step_y
-            b, g, r = int(frame[py, px, 0]), int(frame[py, px, 1]), int(frame[py, px, 2])
-            dist = ((r - profile.r) ** 2 +
-                    (g - profile.g) ** 2 +
-                    (b - profile.b) ** 2) ** 0.5
-            if dist <= profile.tolerance:
-                count += 1
+        for row_idx, (y0, y1) in enumerate(row_bands, start=1):
+            for col_idx, (x0, x1) in enumerate(col_bands, start=1):
+                cell_mask = raw_mask[y0:y1 + 1, x0:x1 + 1]
+                matching_pixels = int(np.sum(cell_mask))
+                if matching_pixels > 0:
+                    count += 1
+
         return count
 
     def _grab_viewport(self):
