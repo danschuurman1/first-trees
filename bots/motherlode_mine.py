@@ -279,15 +279,43 @@ class MotherlodeMineBot(Bot):
 
     def _count_inventory_ore(self) -> int:
         """
-        Grab the full RuneLite window at its current screen position/size
-        and count inv_ore_color blobs. Returns 0 if the profile is disabled.
+        Count inventory slots containing inv_ore_color by sampling the centre
+        pixel of each of the 28 slots.
+
+        Slot positions are derived proportionally from the current window size
+        so the grid stays accurate at any RuneLite resolution or stretch factor.
+        The reference layout is the OSRS fixed-mode 765×503 client:
+            slot-1 centre: (563, 213), step: (42, 36), grid: 4 cols × 7 rows.
+
+        Returns 0 if the profile is disabled. Maximum return value is 28.
         """
         profile = getattr(self._cfg, "inv_ore_color", None)
         if not profile or not profile.enabled:
             return 0
+
         left, top, width, height = self._get_window_rect()
-        frame = self._screen.grab((left, top, width, height))
-        return len(self._color.find_clusters(frame, profile))
+
+        # Scale reference slot geometry to actual window dimensions.
+        sx = width  / 765
+        sy = height / 503
+        origin_x = round(563 * sx)
+        origin_y = round(213 * sy)
+        step_x   = round(42  * sx)
+        step_y   = round(36  * sy)
+
+        count = 0
+        for slot in range(4 * 7):
+            col = slot % 4
+            row = slot // 4
+            abs_x = left + origin_x + col * step_x
+            abs_y = top  + origin_y + row * step_y
+            r, g, b = self._screen.pixel_color(abs_x, abs_y)
+            dist = ((r - profile.r) ** 2 +
+                    (g - profile.g) ** 2 +
+                    (b - profile.b) ** 2) ** 0.5
+            if dist <= profile.tolerance:
+                count += 1
+        return count
 
     def _grab_viewport(self):
         ox, oy = self._origin
