@@ -1,13 +1,13 @@
 from __future__ import annotations
 import math
 import random
+import subprocess
 import time
 from typing import Optional, Tuple, List
 
 from bots.base_bot import Bot
 from config import BotConfig
 from core.color import ColorDetector, ClusterRegion
-from core.inventory_monitor import InventoryMonitor
 from core.mouse import MouseController
 from core.screen import ScreenCapture
 from core.calibrate import find_runelight_origin
@@ -28,9 +28,9 @@ _INV_DEPOSIT_AT = 26        # deposit when inventory ore count reaches this
 _ORE_TIMEOUT_S  = 60.0      # deposit if no new ore clicked for this many seconds
 
 # Hopper interaction timing
-_DEPOSIT_WAIT_MIN = 2.0     # seconds to wait after clicking hopper
+_DEPOSIT_WAIT_MIN = 2.0
 _DEPOSIT_WAIT_MAX = 4.0
-_DEPOSIT_MAX_RETRIES = 3    # re-click hopper up to this many times if inv not empty
+_DEPOSIT_MAX_RETRIES = 3
 
 
 class MotherlodeMineBot(Bot):
@@ -60,9 +60,8 @@ class MotherlodeMineBot(Bot):
         self._origin: Tuple[int, int] = (0, 0)
 
         self._state = "FIND_ORE"
-        self._active_click: Optional[Tuple[int, int]] = None  # client-relative
-        self._last_ore_time: float = 0.0   # time.time() of last successful ore click
-        self._inv_monitor: Optional[InventoryMonitor] = None  # built lazily
+        self._active_click: Optional[Tuple[int, int]] = None
+        self._last_ore_time: float = 0.0
 
     # ------------------------------------------------------------------
     # Main loop
@@ -77,12 +76,6 @@ class MotherlodeMineBot(Bot):
             self.log("RuneLite window not found — waiting...")
             self.random_sleep(2.0, 4.0)
             return
-
-        # Lazily build inventory monitor once origin is confirmed.
-        if self._inv_monitor is None:
-            inv_profile = getattr(self._cfg, "inv_ore_color", None)
-            if inv_profile and inv_profile.enabled:
-                self._inv_monitor = InventoryMonitor(self._screen, inv_profile)
 
         if self._state == "FIND_ORE":
             self._do_find_ore()
@@ -128,10 +121,9 @@ class MotherlodeMineBot(Bot):
         self.micro_pause()
 
     def _should_deposit_by_count(self) -> bool:
-        if self._inv_monitor is None:
-            return False
-        count = self._inv_monitor.count_items()
-        self.log(f"Inventory ore count: {count}")
+        count = self._count_inventory_ore()
+        if count > 0:
+            self.log(f"Inventory ore count: {count}")
         return count >= _INV_DEPOSIT_AT
 
     def _upper_level_visible(self) -> bool:
@@ -211,18 +203,17 @@ class MotherlodeMineBot(Bot):
 
     def _do_deposit_hopper(self) -> None:
         """
-        Find the hopper, click it, then verify the inventory is empty.
-        Re-clicks up to _DEPOSIT_MAX_RETRIES times if ore remains after deposit.
+        Find the hopper, click it, verify inventory is empty.
+        Re-clicks up to _DEPOSIT_MAX_RETRIES times if ore remains.
         """
         hopper_profile = getattr(self._cfg, "hopper_color", None)
         if not hopper_profile or not hopper_profile.enabled:
             self.log("Hopper colour not configured — skipping deposit")
-            self._state = "FIND_ORE"
             self._last_ore_time = time.time()
+            self._state = "FIND_ORE"
             return
 
         for attempt in range(1, _DEPOSIT_MAX_RETRIES + 1):
-            # Locate hopper in the viewport.
             frame = self._grab_viewport()
             regions = self._color.find_cluster_regions(
                 frame, hopper_profile, region_offset=(_VP_X, _VP_Y)
@@ -230,24 +221,22 @@ class MotherlodeMineBot(Bot):
             if not regions:
                 self.log(f"Hopper not visible (attempt {attempt}) — waiting to retry")
                 self.random_sleep(1.5, 3.0)
-                return  # stay in DEPOSIT_HOPPER; will retry next run_loop call
+                return  # stay in DEPOSIT_HOPPER; retry next run_loop call
 
-            # Click the largest hopper blob.
             target = max(regions, key=lambda r: len(r.pixels))
             click_pt = self._interior_click(target)
             self.log(f"Clicking hopper at client {click_pt} (attempt {attempt})")
             self._mouse.move_and_click(click_pt, log_callback=self.log)
 
-            # Wait for the deposit animation to complete.
             self.random_sleep(_DEPOSIT_WAIT_MIN, _DEPOSIT_WAIT_MAX)
 
-            # Verify inventory is now empty.
-            if self._inv_monitor is None:
-                # Can't verify — assume success and move on.
+            # Verify inventory via full-window scan.
+            inv_profile = getattr(self._cfg, "inv_ore_color", None)
+            if not inv_profile or not inv_profile.enabled:
                 self.log("Inventory colour not configured — assuming deposit succeeded")
                 break
 
-            remaining = self._inv_monitor.count_items()
+            remaining = self._count_inventory_ore()
             self.log(f"Post-deposit inventory count: {remaining}")
             if remaining == 0:
                 self.log("Deposit confirmed — inventory empty")
@@ -258,15 +247,47 @@ class MotherlodeMineBot(Bot):
             else:
                 self.log(f"Still {remaining} ore after {_DEPOSIT_MAX_RETRIES} attempts — resuming anyway")
 
-        # Reset tracking and return to mining.
         self._last_ore_time = time.time()
         self._active_click = None
         self._state = "FIND_ORE"
         self.log("Deposit complete — resuming mining")
 
     # ------------------------------------------------------------------
-    # Shared helpers
+    # Helpers
     # ------------------------------------------------------------------
+
+    def _get_window_rect(self) -> Tuple[int, int, int, int]:
+        """
+        Return (left, top, width, height) of the OSRS content area in
+        absolute screen coordinates at the window's current position/size.
+        Falls back to (0, 0, 765, 503) if RuneLite is not found.
+        """
+        try:
+            r = subprocess.run(
+                ['osascript', '-e',
+                 'tell application "System Events" to tell process "RuneLite" '
+                 'to get {position, size} of window 1'],
+                capture_output=True, text=True, timeout=3,
+            )
+            if r.returncode == 0:
+                px, py, sw, sh = [int(v.strip()) for v in r.stdout.strip().split(',')]
+                title_bar = max(sh - 503, 0)
+                return (px, py + title_bar, sw, 503)
+        except Exception:
+            pass
+        return (0, 0, 765, 503)
+
+    def _count_inventory_ore(self) -> int:
+        """
+        Grab the full RuneLite window at its current screen position/size
+        and count inv_ore_color blobs. Returns 0 if the profile is disabled.
+        """
+        profile = getattr(self._cfg, "inv_ore_color", None)
+        if not profile or not profile.enabled:
+            return 0
+        left, top, width, height = self._get_window_rect()
+        frame = self._screen.grab((left, top, width, height))
+        return len(self._color.find_clusters(frame, profile))
 
     def _grab_viewport(self):
         ox, oy = self._origin
