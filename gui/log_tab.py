@@ -21,6 +21,7 @@ class LogTab(ttk.Frame):
         btn_frame = ttk.Frame(self)
         btn_frame.pack(side="bottom", fill="x")
         ttk.Button(btn_frame, text="Clear", command=self.clear).pack(side="left", padx=4, pady=4)
+        ttk.Button(btn_frame, text="Copy", command=self._copy).pack(side="left", padx=4)
         ttk.Button(btn_frame, text="Export .txt", command=self._export).pack(side="left", padx=4)
 
     def append(self, msg: str) -> None:
@@ -33,6 +34,11 @@ class LogTab(ttk.Frame):
         self._text.configure(state="normal")
         self._text.delete("1.0", "end")
         self._text.configure(state="disabled")
+
+    def _copy(self) -> None:
+        content = self._text.get("1.0", "end-1c")
+        self._text.clipboard_clear()
+        self._text.clipboard_append(content)
 
     def _export(self) -> None:
         path = filedialog.asksaveasfilename(

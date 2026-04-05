@@ -262,15 +262,53 @@ class MotherlodeMineBot(Bot):
 
     def _count_inventory_ore(self) -> int:
         """
-        Count inventory slots containing inv_ore_color using the same
-        dynamic band-detection approach as WillowBankerBot.
-        Returns 0 if the profile is disabled. Maximum is 28.
+        Count inventory slots containing inv_ore_color.
+
+        Grabs the inventory panel using self._origin (set at the top of
+        run_loop before this is ever called), computes a colour-distance
+        mask over the whole panel, then checks a 16×16px patch centred on
+        each of the 28 slot centres.  Any matching pixel in the patch counts
+        the slot as occupied.  Maximum return value is 28.
         """
         profile = getattr(self._cfg, "inv_ore_color", None)
         if not profile or not profile.enabled:
             return 0
-        window = self._grab_window()
-        return self._count_ore_in_window(window)
+
+        ox, oy = self._origin
+        frame = self._screen.grab((ox + 548, oy + 205, 172, 252))
+        if frame is None or frame.size == 0:
+            self.log("inv panel grab failed")
+            return 0
+
+        arr = frame.astype(np.int32)
+        dist = np.sqrt(
+            (arr[:, :, 2] - profile.r) ** 2 +
+            (arr[:, :, 1] - profile.g) ** 2 +
+            (arr[:, :, 0] - profile.b) ** 2
+        )
+        mask = dist <= profile.tolerance
+        total_px = int(np.sum(mask))
+        self.log(f"inv panel matched pixels: {total_px}")
+
+        slot_ox, slot_oy = 15, 8
+        step_x, step_y = 42, 36
+        patch = 8  # pixels either side of slot centre to check
+
+        count = 0
+        for slot in range(4 * 7):
+            col = slot % 4
+            row = slot // 4
+            cx = slot_ox + col * step_x
+            cy = slot_oy + row * step_y
+            y0 = max(0, cy - patch)
+            y1 = min(mask.shape[0], cy + patch + 1)
+            x0 = max(0, cx - patch)
+            x1 = min(mask.shape[1], cx + patch + 1)
+            if np.any(mask[y0:y1, x0:x1]):
+                count += 1
+
+        self.log(f"inv slot count: {count}")
+        return count
 
     def _activate_runelite(self) -> None:
         """Bring RuneLite to the front so the capture sees the real client."""
@@ -402,6 +440,11 @@ class MotherlodeMineBot(Bot):
         occupied inventory cells directly.
         """
         raw_mask = self._inv_ore_mask(window)
+        total_px = int(np.sum(raw_mask))
+        self.log(f"inv_ore raw pixels matched: {total_px}")
+        if total_px == 0:
+            return 0
+
         merged_mask = self._merge_mask(raw_mask)
 
         x_counts = merged_mask.sum(axis=0)
@@ -416,8 +459,11 @@ class MotherlodeMineBot(Bot):
 
         col_bands = self._find_bands(x_counts, gap_x, min_x_span, min_x_mass)
         row_bands = self._find_bands(y_counts, gap_y, min_y_span, min_y_mass)
+        self.log(f"col_bands before trim: {len(col_bands)}, row_bands before trim: {len(row_bands)}")
         col_bands = self._top_bands(col_bands, x_counts, limit=4)
         row_bands = self._top_bands(row_bands, y_counts, limit=7)
+        self.log(f"col_bands: {col_bands}")
+        self.log(f"row_bands: {row_bands}")
 
         count = 0
         for row_idx, (y0, y1) in enumerate(row_bands, start=1):
