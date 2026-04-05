@@ -264,11 +264,11 @@ class MotherlodeMineBot(Bot):
         """
         Count inventory slots containing inv_ore_color.
 
-        Grabs the inventory panel using self._origin (set at the top of
-        run_loop before this is ever called), computes a colour-distance
-        mask over the whole panel, then checks a 16×16px patch centred on
-        each of the 28 slot centres.  Any matching pixel in the patch counts
-        the slot as occupied.  Maximum return value is 28.
+        Grabs the 172×252 inventory panel, builds a colour-distance mask,
+        then divides it into a 4-col × 7-row grid and checks each cell.
+        Any matching pixel anywhere in the cell counts the slot as occupied.
+        This avoids dependence on exact slot-centre offsets.
+        Maximum return value is 28.
         """
         profile = getattr(self._cfg, "inv_ore_color", None)
         if not profile or not profile.enabled:
@@ -290,22 +290,19 @@ class MotherlodeMineBot(Bot):
         total_px = int(np.sum(mask))
         self.log(f"inv panel matched pixels: {total_px}")
 
-        slot_ox, slot_oy = 15, 8
-        step_x, step_y = 42, 36
-        patch = 8  # pixels either side of slot centre to check
+        h, w = mask.shape
+        slot_w = w // 4   # 43
+        slot_h = h // 7   # 36
 
         count = 0
-        for slot in range(4 * 7):
-            col = slot % 4
-            row = slot // 4
-            cx = slot_ox + col * step_x
-            cy = slot_oy + row * step_y
-            y0 = max(0, cy - patch)
-            y1 = min(mask.shape[0], cy + patch + 1)
-            x0 = max(0, cx - patch)
-            x1 = min(mask.shape[1], cx + patch + 1)
-            if np.any(mask[y0:y1, x0:x1]):
-                count += 1
+        for row in range(7):
+            for col in range(4):
+                x0 = col * slot_w
+                y0 = row * slot_h
+                x1 = min(w, x0 + slot_w)
+                y1 = min(h, y0 + slot_h)
+                if np.any(mask[y0:y1, x0:x1]):
+                    count += 1
 
         self.log(f"inv slot count: {count}")
         return count

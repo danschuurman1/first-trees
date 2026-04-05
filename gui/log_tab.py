@@ -11,18 +11,18 @@ class LogTab(ttk.Frame):
         self._build()
 
     def _build(self) -> None:
+        btn_frame = ttk.Frame(self)
+        btn_frame.pack(side="bottom", fill="x")
+        ttk.Button(btn_frame, text="Clear", command=self.clear).pack(side="left", padx=4, pady=4)
+        ttk.Button(btn_frame, text="Copy", command=self._copy).pack(side="left", padx=4)
+        ttk.Button(btn_frame, text="Export .txt", command=self._export).pack(side="left", padx=4)
+
         self._text = tk.Text(self, state="disabled", wrap="word", bg="#1e1e1e", fg="#cccccc",
                               font=("Courier", 10))
         scroll = ttk.Scrollbar(self, command=self._text.yview)
         self._text.configure(yscrollcommand=scroll.set)
         self._text.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
-
-        btn_frame = ttk.Frame(self)
-        btn_frame.pack(side="bottom", fill="x")
-        ttk.Button(btn_frame, text="Clear", command=self.clear).pack(side="left", padx=4, pady=4)
-        ttk.Button(btn_frame, text="Copy", command=self._copy).pack(side="left", padx=4)
-        ttk.Button(btn_frame, text="Export .txt", command=self._export).pack(side="left", padx=4)
 
     def append(self, msg: str) -> None:
         self._text.configure(state="normal")
