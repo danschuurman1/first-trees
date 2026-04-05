@@ -60,6 +60,24 @@ class Bot(ABC):
         self._running.clear()
         self.log(f"Bot '{self.name}' stopped.")
 
+    def stop_if_runtime_elapsed(self, config: object) -> bool:
+        if self.start_time is None:
+            return False
+
+        duration_value = getattr(config, "run_duration_value", 0)
+        duration_unit = getattr(config, "run_duration_unit", "minutes")
+        if duration_value <= 0:
+            return False
+
+        multiplier = 3600 if duration_unit == "hours" else 60
+        elapsed_seconds = (datetime.now() - self.start_time).total_seconds()
+        if elapsed_seconds < duration_value * multiplier:
+            return False
+
+        self.log(f"Configured runtime reached ({duration_value} {duration_unit}) — stopping bot")
+        self.stop()
+        return True
+
     @abstractmethod
     def run_loop(self) -> None:
         """Single iteration of the bot's decision tree. Called repeatedly."""
@@ -80,3 +98,8 @@ class Bot(ABC):
     def register(cls) -> None:
         from bots.registry import BOT_REGISTRY
         BOT_REGISTRY[cls.name] = cls
+
+    @classmethod
+    def register_test(cls) -> None:
+        from bots.test_registry import TEST_REGISTRY
+        TEST_REGISTRY[cls.name] = cls

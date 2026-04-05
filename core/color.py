@@ -1,6 +1,7 @@
 # core/color.py
 from __future__ import annotations
 import math
+from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 import cv2
@@ -11,6 +12,13 @@ from config import ColorProfile
 # Minimum blob size (pixels) to not be treated as noise.
 # A real RuneLite tree highlight produces a much larger region than stray noise.
 MIN_BLOB_PIXELS = 20
+
+
+@dataclass
+class ClusterRegion:
+    centroid: Tuple[int, int]
+    bounds: Tuple[int, int, int, int]
+    pixels: List[Tuple[int, int]]
 
 
 class ColorDetector:
@@ -44,6 +52,58 @@ class ColorDetector:
             cy = int(centroids[label, 1]) + region_offset[1]
             results.append((cx, cy))
         return results
+
+    def find_cluster_regions(
+        self,
+        img: np.ndarray,
+        profile: ColorProfile,
+        region_offset: Tuple[int, int] = (0, 0),
+    ) -> List[ClusterRegion]:
+        """Return centroid, bounding box, and member pixels for each surviving blob."""
+        mask = self._mask(img, profile)
+        num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
+
+        results: List[ClusterRegion] = []
+        for label in range(1, num_labels):
+            area = stats[label, cv2.CC_STAT_AREA]
+            if area < MIN_BLOB_PIXELS:
+                continue
+
+            left = int(stats[label, cv2.CC_STAT_LEFT]) + region_offset[0]
+            top = int(stats[label, cv2.CC_STAT_TOP]) + region_offset[1]
+            width = int(stats[label, cv2.CC_STAT_WIDTH])
+            height = int(stats[label, cv2.CC_STAT_HEIGHT])
+            cx = int(centroids[label, 0]) + region_offset[0]
+            cy = int(centroids[label, 1]) + region_offset[1]
+
+            ys, xs = np.where(labels == label)
+            pixels = [
+                (int(x) + region_offset[0], int(y) + region_offset[1])
+                for y, x in zip(ys, xs)
+            ]
+            results.append(
+                ClusterRegion(
+                    centroid=(cx, cy),
+                    bounds=(left, top, width, height),
+                    pixels=pixels,
+                )
+            )
+        return results
+
+    def find_log_slots(
+        self,
+        frame: np.ndarray,
+        profile: ColorProfile,
+        logical_width: int,
+    ) -> List[Tuple[int, int]]:
+        """Find blobs matching profile and return their centroids as logical screen coords.
+
+        Retina-safe: logical_width is the monitor's logical pixel width; frame.shape[1] is
+        the physical pixel width. scale = physical / logical is applied to convert centroids.
+        """
+        scale = frame.shape[1] / logical_width
+        blobs = self.find_clusters(frame, profile)
+        return [(int(cx / scale), int(cy / scale)) for cx, cy in blobs]
 
     def best_cluster(
         self,

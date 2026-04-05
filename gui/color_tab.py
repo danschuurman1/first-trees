@@ -1,8 +1,9 @@
 # gui/color_tab.py
 from __future__ import annotations
+import sys
 import tkinter as tk
 from tkinter import ttk, colorchooser
-from typing import Callable
+from typing import Callable, Dict
 from config import BotConfig, ColorProfile
 
 
@@ -26,9 +27,9 @@ class ColorSlot(ttk.LabelFrame):
         row = 0
         if enable_toggle:
             self._enabled_var = tk.BooleanVar(value=self._profile.enabled)
-            ttk.Checkbutton(self, text="Enabled", variable=self._enabled_var,
-                            command=self._commit).grid(row=row, column=0, columnspan=4,
-                                                       sticky="w", padx=4)
+            self._check = ttk.Checkbutton(self, text="Enabled", variable=self._enabled_var,
+                            command=self._commit)
+            self._check.grid(row=row, column=0, columnspan=4, sticky="w", padx=4)
             row += 1
         else:
             self._enabled_var = None
@@ -38,7 +39,7 @@ class ColorSlot(ttk.LabelFrame):
 
         ttk.Button(self, text="Pick", command=self._pick_color).grid(row=row, column=1, padx=2)
 
-        # Hex input field — paste #FF0000 style codes directly from RuneScape object markers
+        # Hex input field
         ttk.Label(self, text="Hex:").grid(row=row, column=2, sticky="e", padx=2)
         self._hex_var = tk.StringVar(value=_rgb_to_hex(self._profile.r, self._profile.g, self._profile.b))
         self._hex_entry = ttk.Entry(self, textvariable=self._hex_var, width=8)
@@ -46,10 +47,13 @@ class ColorSlot(ttk.LabelFrame):
         self._hex_entry.bind("<Return>", lambda _: self._apply_hex())
         self._hex_entry.bind("<FocusOut>", lambda _: self._apply_hex())
 
-        for i, (ch, attr) in enumerate([("R", "r"), ("G", "g"), ("B", "b")]):
+        # RGB Spinboxes
+        self._r_var = tk.IntVar(value=self._profile.r)
+        self._g_var = tk.IntVar(value=self._profile.g)
+        self._b_var = tk.IntVar(value=self._profile.b)
+
+        for i, (ch, var) in enumerate([("R", self._r_var), ("G", self._g_var), ("B", self._b_var)]):
             ttk.Label(self, text=ch).grid(row=row + 1, column=i, sticky="e", padx=2)
-            var = tk.IntVar(value=getattr(self._profile, attr))
-            setattr(self, f"_{attr}_var", var)
             sb = ttk.Spinbox(self, from_=0, to=255, textvariable=var, width=5,
                              command=self._commit)
             sb.grid(row=row + 2, column=i, padx=2)
@@ -57,8 +61,22 @@ class ColorSlot(ttk.LabelFrame):
 
         ttk.Label(self, text="Tol:").grid(row=row + 1, column=3, padx=2)
         self._tol_var = tk.IntVar(value=self._profile.tolerance)
-        ttk.Scale(self, from_=0, to=50, variable=self._tol_var, orient="horizontal",
-                  length=80, command=lambda _: self._commit()).grid(row=row + 2, column=3, padx=2)
+        self._tol_scale = ttk.Scale(self, from_=0, to=50, variable=self._tol_var, orient="horizontal",
+                  length=80, command=lambda _: self._commit())
+        self._tol_scale.grid(row=row + 2, column=3, padx=2)
+
+    def update_profile(self, new_profile: ColorProfile) -> None:
+        """Update the UI to reflect a new profile instance."""
+        self._profile = new_profile
+        self._updating_hex = True
+        self._r_var.set(new_profile.r)
+        self._g_var.set(new_profile.g)
+        self._b_var.set(new_profile.b)
+        self._tol_var.set(new_profile.tolerance)
+        if self._enabled_var:
+            self._enabled_var.set(new_profile.enabled)
+        self._updating_hex = False
+        self._refresh_swatch()
 
     def _apply_hex(self) -> None:
         raw = self._hex_var.get().strip().lstrip("#")
@@ -86,6 +104,8 @@ class ColorSlot(ttk.LabelFrame):
             self._commit()
 
     def _commit(self) -> None:
+        if getattr(self, "_updating_hex", False):
+            return
         try:
             self._profile.r = int(self._r_var.get())
             self._profile.g = int(self._g_var.get())
@@ -93,7 +113,7 @@ class ColorSlot(ttk.LabelFrame):
             self._profile.tolerance = int(self._tol_var.get())
             if self._enabled_var:
                 self._profile.enabled = self._enabled_var.get()
-        except tk.TclError:
+        except (tk.TclError, ValueError):
             return
         self._refresh_swatch()
         self._on_change()
@@ -103,99 +123,173 @@ class ColorSlot(ttk.LabelFrame):
         self._swatch.configure(bg=hex_val)
         if not getattr(self, "_updating_hex", False):
             try:
-                if self._hex_entry.focus_get() != self._hex_entry:
+                if self.focus_get() != self._hex_entry:
                     self._hex_var.set(hex_val)
             except Exception:
                 self._hex_var.set(hex_val)
 
 
 class ColorTab(ttk.Frame):
-    def __init__(self, parent: ttk.Notebook, config: BotConfig,
+    """
+    Redesigned ColorTab using a Sub-Notebook (Tabs) to eliminate scrolling.
+    Settings are grouped logically to fit within a small fixed-size UI.
+    """
+    def __init__(self, parent: ttk.Notebook, preset: BotConfig,
                  on_change: Callable[[], None]) -> None:
         super().__init__(parent)
-        self._cfg = config
+        self._preset = preset
         self._on_change = on_change
+        self._slots: Dict[str, ColorSlot] = {}
         self._build()
 
     def _build(self) -> None:
-        # Scrollable canvas wrapper
-        canvas = tk.Canvas(self, borderwidth=0, highlightthickness=0)
-        vsb = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=vsb.set)
-        vsb.pack(side="right", fill="y")
-        canvas.pack(side="left", fill="both", expand=True)
+        # Create a sub-notebook inside the Color Tab
+        self._sub_nb = ttk.Notebook(self)
+        self._sub_nb.pack(fill="both", expand=True, padx=2, pady=2)
 
-        inner = ttk.Frame(canvas)
-        canvas_window = canvas.create_window((0, 0), window=inner, anchor="nw")
+        # 1. Primary Colors Tab
+        f_primary = ttk.Frame(self._sub_nb)
+        self._sub_nb.add(f_primary, text="Main")
+        self._build_primary(f_primary)
 
-        # Resize inner frame to canvas width when canvas resizes
-        def _on_canvas_resize(event):
-            canvas.itemconfig(canvas_window, width=event.width)
-        canvas.bind("<Configure>", _on_canvas_resize)
+        # 2. Signals Tab (Stumps, XP)
+        f_signals = ttk.Frame(self._sub_nb)
+        self._sub_nb.add(f_signals, text="Signals")
+        self._build_signals(f_signals)
 
-        # Update scroll region when inner frame changes size
-        inner.bind("<Configure>", lambda e: canvas.configure(
-            scrollregion=canvas.bbox("all")
-        ))
+        # 3. Inventory & UI Tab
+        f_inv = ttk.Frame(self._sub_nb)
+        self._sub_nb.add(f_inv, text="Inv/UI")
+        self._build_inventory(f_inv)
 
-        # Mousewheel scrolling
-        def _on_mousewheel(event):
-            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        # 4. World & Navigation Tab
+        f_world = ttk.Frame(self._sub_nb)
+        self._sub_nb.add(f_world, text="World")
+        self._build_world(f_world)
 
-        # Build all widgets inside inner frame
+        # 5. Timing Tab
+        f_timing = ttk.Frame(self._sub_nb)
+        self._sub_nb.add(f_timing, text="Timing")
+        self._build_timing(f_timing)
+
+        # 6. Motherlode Mine Tab
+        f_mlm = ttk.Frame(self._sub_nb)
+        self._sub_nb.add(f_mlm, text="MLM")
+        self._build_mlm(f_mlm)
+
+    def _build_primary(self, parent: ttk.Frame) -> None:
         pad = {"padx": 6, "pady": 4}
+        self._slots["tree_color"] = ColorSlot(parent, "Tree Color (Primary)", self._preset.tree_color,
+                                              self._on_change)
+        self._slots["tree_color"].pack(fill="x", **pad)
+        
+        self._slots["color2"] = ColorSlot(parent, "Override Color (Color 2)", self._preset.color2,
+                                          self._on_change, enable_toggle=True)
+        self._slots["color2"].pack(fill="x", **pad)
 
-        ttk.Label(inner, text="Tree Color (Cyan)", font=("Helvetica", 10, "bold")).grid(
-            row=0, column=0, columnspan=2, pady=(8, 2))
+    def _build_signals(self, parent: ttk.Frame) -> None:
+        pad = {"padx": 6, "pady": 4}
+        self._slots["stump_color"] = ColorSlot(parent, "Stump Color 1", self._preset.stump_color,
+                                               self._on_change, enable_toggle=True)
+        self._slots["stump_color"].pack(fill="x", **pad)
+        
+        self._slots["stump_color2"] = ColorSlot(parent, "Stump Color 2", self._preset.stump_color2,
+                                                self._on_change, enable_toggle=True)
+        self._slots["stump_color2"].pack(fill="x", **pad)
 
-        ColorSlot(inner, "Tree Color (Primary)", self._cfg.tree_color,
-                  self._on_change).grid(row=1, column=0, columnspan=2, sticky="nw", **pad)
+        self._slots["xp_drop_color"] = ColorSlot(parent, "XP Drop Color (Green)", self._preset.xp_drop_color,
+                                                 self._on_change, enable_toggle=True)
+        self._slots["xp_drop_color"].pack(fill="x", **pad)
 
-        ttk.Separator(inner, orient="horizontal").grid(row=2, column=0, columnspan=2,
-                                                        sticky="ew", pady=6)
-        ttk.Label(inner, text="Stump Colors", font=("Helvetica", 10, "bold")).grid(
-            row=3, column=0, columnspan=2, pady=(2, 2))
-        ttk.Label(inner, text="Set to depleted stump colors. Enable to use stump detection.",
-                  foreground="gray").grid(row=4, column=0, columnspan=2, pady=(0, 2))
+    def _build_inventory(self, parent: ttk.Frame) -> None:
+        pad = {"padx": 6, "pady": 4}
+        self._slots["log_color"] = ColorSlot(parent, "Log Color (Inventory)", self._preset.log_color,
+                                             self._on_change, enable_toggle=True)
+        self._slots["log_color"].pack(fill="x", **pad)
+        
+        self._slots["inv_count_color"] = ColorSlot(parent, "Inventory Count Text", self._preset.inv_count_color,
+                                                   self._on_change, enable_toggle=True)
+        self._slots["inv_count_color"].pack(fill="x", **pad)
 
-        ColorSlot(inner, "Stump Color (tree-cut signal)", self._cfg.stump_color,
-                  self._on_change, enable_toggle=True).grid(row=5, column=0, columnspan=2,
-                                                             sticky="nw", **pad)
+    def _build_world(self, parent: ttk.Frame) -> None:
+        pad = {"padx": 6, "pady": 4}
+        self._slots["bank_booth_color"] = ColorSlot(parent, "Bank Booth (Purple)", self._preset.bank_booth_color,
+                                                    self._on_change, enable_toggle=True)
+        self._slots["bank_booth_color"].pack(fill="x", **pad)
+        
+        self._slots["grid_color"] = ColorSlot(parent, "Grid Color (Anchor)", self._preset.grid_color,
+                                              self._on_change, enable_toggle=True)
+        self._slots["grid_color"].pack(fill="x", **pad)
 
-        ColorSlot(inner, "Stump Color 2 (tree-cut signal)", self._cfg.stump_color2,
-                  self._on_change, enable_toggle=True).grid(row=6, column=0, columnspan=2,
-                                                             sticky="nw", **pad)
+    def _build_timing(self, parent: ttk.Frame) -> None:
+        pad = {"padx": 10, "pady": 10}
+        timing = ttk.LabelFrame(parent, text="Scan Cycle Timing")
+        timing.pack(fill="x", **pad)
+        
+        tk.Label(timing, text="Min delay (s):").grid(row=0, column=0, padx=4, pady=8)
+        self._min_var = tk.DoubleVar(value=self._preset.min_delay)
+        self._min_spin = ttk.Spinbox(timing, from_=0.1, to=5.0, increment=0.1, textvariable=self._min_var,
+                    width=6, command=self._save_timing)
+        self._min_spin.grid(row=0, column=1, padx=4)
+        
+        tk.Label(timing, text="Max delay (s):").grid(row=0, column=2, padx=4)
+        self._max_var = tk.DoubleVar(value=self._preset.max_delay)
+        self._max_spin = ttk.Spinbox(timing, from_=0.1, to=5.0, increment=0.1, textvariable=self._max_var,
+                    width=6, command=self._save_timing)
+        self._max_spin.grid(row=0, column=3, padx=4)
+        
+        tk.Label(timing, text="Bot waits random(min, max) between scans.", 
+                 foreground="gray", font=("Helvetica", 8)).grid(row=1, column=0, columnspan=4, pady=(0, 8))
 
-        ttk.Separator(inner, orient="horizontal").grid(row=7, column=0, columnspan=2,
-                                                        sticky="ew", pady=6)
-        ttk.Label(inner, text="Override Color", font=("Helvetica", 10, "bold")).grid(
-            row=8, column=0, columnspan=2, pady=(2, 2))
+    def _build_mlm(self, parent: ttk.Frame) -> None:
+        # Create a scrollable frame for MLM since there are many slots
+        canvas = tk.Canvas(parent)
+        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
 
-        ColorSlot(inner, "Color 2 (Override — checked first)", self._cfg.color2,
-                  self._on_change, enable_toggle=True).grid(row=9, column=0, columnspan=2,
-                                                             sticky="nw", **pad)
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(
+                scrollregion=canvas.bbox("all")
+            )
+        )
 
-        ttk.Separator(inner, orient="horizontal").grid(row=10, column=0, columnspan=2,
-                                                        sticky="ew", pady=6)
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
 
-        timing = ttk.LabelFrame(inner, text="Search Timing")
-        timing.grid(row=11, column=0, columnspan=2, padx=6, pady=8, sticky="ew")
-        ttk.Label(timing, text="Min delay (s):").grid(row=0, column=0, padx=4, pady=4)
-        self._min_var = tk.DoubleVar(value=self._cfg.min_delay)
-        ttk.Spinbox(timing, from_=0.1, to=5.0, increment=0.1, textvariable=self._min_var,
-                    width=6, command=self._save_timing).grid(row=0, column=1, padx=4)
-        ttk.Label(timing, text="Max delay (s):").grid(row=0, column=2, padx=4)
-        self._max_var = tk.DoubleVar(value=self._cfg.max_delay)
-        ttk.Spinbox(timing, from_=0.1, to=5.0, increment=0.1, textvariable=self._max_var,
-                    width=6, command=self._save_timing).grid(row=0, column=3, padx=4)
-        ttk.Label(timing, text="Bot waits random.uniform(min, max) seconds between scan cycles.",
-                  foreground="gray").grid(row=1, column=0, columnspan=4, padx=4, pady=2)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        pad = {"padx": 6, "pady": 4}
+        mlm_slots = [
+            ("bank_chest_color", "Bank Chest"),
+            ("ore_active_color", "Active Ore"),
+            ("ore_depleted_color", "Depleted Ore"),
+            ("hopper_color", "Hopper"),
+            ("ladder_ascend_color", "Ladder Ascend"),
+            ("ladder_descend_color", "Ladder Descend"),
+            ("sack_color", "Sack")
+        ]
+        
+        for key, label in mlm_slots:
+            self._slots[key] = ColorSlot(scrollable_frame, label, getattr(self._preset, key),
+                                        self._on_change, enable_toggle=True)
+            self._slots[key].pack(fill="x", **pad)
+
+    def refresh_preset(self, new_preset: BotConfig) -> None:
+        """Update all widgets to reflect a new preset."""
+        self._preset = new_preset
+        for key, slot in self._slots.items():
+            profile = getattr(new_preset, key)
+            slot.update_profile(profile)
+        
+        self._min_var.set(new_preset.min_delay)
+        self._max_var.set(new_preset.max_delay)
 
     def _save_timing(self) -> None:
         try:
-            self._cfg.min_delay = float(self._min_var.get())
-            self._cfg.max_delay = float(self._max_var.get())
+            self._preset.min_delay = float(self._min_var.get())
+            self._preset.max_delay = float(self._max_var.get())
         except (ValueError, tk.TclError):
             return
         self._on_change()

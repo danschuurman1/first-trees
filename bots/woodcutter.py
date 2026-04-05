@@ -3,9 +3,12 @@ from __future__ import annotations
 import math
 import random
 import time
+from pathlib import Path
 from typing import List, Optional, Set, Tuple
 
 import numpy as np
+
+import cv2
 
 from bots.base_bot import Bot
 from config import BotConfig, ConfigManager
@@ -14,24 +17,6 @@ from core.color import ColorDetector
 from core.keyboard import KeyboardController
 from core.mouse import MouseController
 from core.screen import ScreenCapture
-
-# OSRS fixed client inventory grid (all coords relative to client origin)
-_INV_TAB_X = 644      # backpack tab icon x (client-relative)
-_INV_TAB_Y = 169      # backpack tab icon y (client-relative)
-_INV_GRID_X = 548     # left edge of inventory grid (client-relative)
-_INV_GRID_Y = 205     # top edge of inventory grid (client-relative)
-_INV_SLOT_W = 42      # horizontal pitch between slot centres
-_INV_SLOT_H = 36      # vertical pitch between slot centres
-_INV_COLS = 4
-_INV_ROWS = 7
-
-# Inventory tab: red (active/open) vs grey (inactive/closed)
-_INV_OPEN_R_MIN = 100
-_INV_OPEN_BIAS  = 50
-
-# A slot is "filled" when its centre pixel has max(R,G,B) above this level.
-# Empty slot background is ~rgb(55, 52, 48); any item is brighter.
-_SLOT_FILLED_THRESHOLD = 65
 
 # Radius (px) scanned around the active tree position for cut signals
 _SCAN_RADIUS = 80
@@ -70,18 +55,41 @@ class WoodcutterBot(Bot):
     def __init__(self, config: Optional[BotConfig] = None) -> None:
         super().__init__()
         cfg_mgr = ConfigManager()
-        self._cfg = config or cfg_mgr.config
+        self._cfg = config or cfg_mgr.get_current_preset()
         self._screen = ScreenCapture()
         self._color = ColorDetector()
         self._mouse = MouseController()
         self._keyboard = KeyboardController()
         self._origin: Tuple[int, int] = find_runelight_origin()
+        from bots.inventory_count_bot import InventoryCountBot
+        self._inv_bot = InventoryCountBot(config=self._cfg)
+        from bots.willow_banker import WillowBankerBot
+        self._banker_bot = WillowBankerBot(config=self._cfg)
+        self._next_inv_poll: float = 0.0
 
     # ------------------------------------------------------------------
     # Main loop
     # ------------------------------------------------------------------
 
     def run_loop(self) -> None:
+        if self.stop_if_runtime_elapsed(self._cfg):
+            return
+
+        # Periodic inventory poll — check every 10–20 s without interrupting chops
+        now = time.monotonic()
+        if now >= self._next_inv_poll:
+            self._next_inv_poll = now + random.uniform(10.0, 20.0)
+            window = self._banker_bot._grab_window()
+            log_count = self._banker_bot._count_logs_in_window(window)
+            self.log(f"Inventory poll: {log_count} log(s)")
+            if log_count >= 27:
+                self.log("Inventory full — handing off to Willow Banker...")
+                self._banker_bot._run_banking_if_ready()
+                while not self._banker_bot.log_queue.empty():
+                    self.log(self._banker_bot.log_queue.get_nowait())
+                self.log("Banking done — resuming chopping")
+                return
+
         tree_pos = self._nearest_living_tree()
 
         if tree_pos is not None:
@@ -113,85 +121,12 @@ class WoodcutterBot(Bot):
 
             self.random_sleep(1.0, 3.0)
         else:
-            self.log("No trees found — dropping logs and waiting for respawn")
-            self._drop_all_logs()
+            self.log("No trees found — delegating to inventory drop")
+            self._inv_bot.run_loop()
+            # relay inventory bot logs into the woodcutter log stream
+            while not self._inv_bot.log_queue.empty():
+                self.log(self._inv_bot.log_queue.get_nowait())
             self.random_sleep(2.0, 4.0)
-
-    # ------------------------------------------------------------------
-    # Inventory helpers
-    # ------------------------------------------------------------------
-
-    def _slot_positions(self) -> List[Tuple[int, int]]:
-        """Return screen (x, y) centres for all 28 inventory slots."""
-        ox, oy = self._origin
-        positions: List[Tuple[int, int]] = []
-        for row in range(_INV_ROWS):
-            for col in range(_INV_COLS):
-                x = ox + _INV_GRID_X + col * _INV_SLOT_W + _INV_SLOT_W // 2
-                y = oy + _INV_GRID_Y + row * _INV_SLOT_H + _INV_SLOT_H // 2
-                positions.append((x, y))
-        return positions
-
-    def _is_slot_filled(self, pos: Tuple[int, int]) -> bool:
-        """Empty slots are ~rgb(55,52,48). Any item raises max(R,G,B) above threshold."""
-        r, g, b = self._screen.pixel_color(pos[0], pos[1])
-        return max(r, g, b) > _SLOT_FILLED_THRESHOLD
-
-    def _is_slot_log(self, pos: Tuple[int, int]) -> bool:
-        """Return True if the slot centre pixel matches the log_color profile."""
-        if not self._cfg.log_color.enabled:
-            return False
-        profile = self._cfg.log_color
-        r, g, b = self._screen.pixel_color(pos[0], pos[1])
-        dist = math.sqrt(
-            (r - profile.r) ** 2 + (g - profile.g) ** 2 + (b - profile.b) ** 2
-        )
-        return dist <= profile.tolerance
-
-    def _count_filled_slots(self) -> int:
-        return sum(1 for pos in self._slot_positions() if self._is_slot_filled(pos))
-
-    def _is_inventory_open(self) -> bool:
-        """Red tab background = open; grey = closed."""
-        ox, oy = self._origin
-        r, g, b = self._screen.pixel_color(ox + _INV_TAB_X, oy + _INV_TAB_Y)
-        return r > _INV_OPEN_R_MIN and r > g + _INV_OPEN_BIAS and r > b + _INV_OPEN_BIAS
-
-    def _ensure_inventory_open(self) -> None:
-        """Click the backpack tab only when it is currently closed."""
-        if not self._is_inventory_open():
-            ox, oy = self._origin
-            self._mouse.move_and_click((ox + _INV_TAB_X, oy + _INV_TAB_Y))
-            self.random_sleep(0.2, 0.4)
-
-    def _inventory_full(self) -> bool:
-        self._ensure_inventory_open()
-        return self._count_filled_slots() >= 28
-
-    def _inventory_has_logs(self) -> bool:
-        self._ensure_inventory_open()
-        return self._count_filled_slots() > 0
-
-    def _drop_all_logs(self) -> None:
-        """Hold Shift and left-click every log slot in a randomized order."""
-        self._ensure_inventory_open()
-        if self._cfg.log_color.enabled:
-            log_slots = [pos for pos in self._slot_positions() if self._is_slot_log(pos)]
-        else:
-            log_slots = [pos for pos in self._slot_positions() if self._is_slot_filled(pos)]
-        if not log_slots:
-            return
-        random.shuffle(log_slots)
-        if random.random() < 0.30:
-            mid = random.randint(1, len(log_slots))
-            log_slots = log_slots[mid:] + log_slots[:mid]
-        self._keyboard.press_shift()
-        try:
-            for pos in log_slots:
-                self._mouse.move_and_click(pos)
-                self.micro_pause()
-        finally:
-            self._keyboard.release_shift()
 
     # ------------------------------------------------------------------
     # Tree detection
